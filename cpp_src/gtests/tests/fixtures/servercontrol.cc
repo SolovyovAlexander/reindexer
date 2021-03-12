@@ -20,6 +20,7 @@ ServerControl::~ServerControl() {
 	interface.reset();
 	delete stopped_;
 }
+void ServerControl::Stop() { interface->Stop(); }
 
 ServerControl::ServerControl(ServerControl&& rhs) {
 	WLock lock(rhs.mtx_);
@@ -85,8 +86,14 @@ ReplicationConfigTest ServerControl::Interface::GetServerConfig(ConfigType type)
 								 std::move(namespaces));
 }
 
-void ServerControl::Interface::WriteServerConfig(const std::string& configYaml) {
+void ServerControl::Interface::WriteReplicationConfig(const std::string& configYaml) {
 	std::ofstream file(kStoragePath + "/" + dbName_ + "/" + kReplicationConfigFilename, std::ios_base::trunc);
+	file << configYaml;
+	file.flush();
+}
+
+void ServerControl::Interface::WriteClusterConfig(const std::string& configYaml) {
+	std::ofstream file(kStoragePath + "/" + dbName_ + "/" + kClusterConfigFilename, std::ios_base::trunc);
 	file << configYaml;
 	file.flush();
 }
@@ -115,15 +122,16 @@ void ServerControl::Interface::SetWALSize(int64_t size, string_view nsName) {
 	ASSERT_TRUE(err.ok()) << err.what();
 }
 
-ServerControl::Interface::Interface(size_t id, std::atomic_bool& stopped, const std::string& ReplicationConfigFilename,
-									const std::string& StoragePath, unsigned short httpPort, unsigned short rpcPort,
-									const std::string& dbName, bool enableStats, size_t maxUpdatesSize)
-	: id_(id),
+ServerControl::Interface::Interface(size_t id, std::atomic_bool& stopped, const std::string& StoragePath, unsigned short httpPort,
+									unsigned short rpcPort, unsigned short clusterPort, const std::string& dbName, bool enableStats,
+									size_t maxUpdatesSize, unsigned short rpcClusterPort)
+	: kClusterManagementDsn("cproto://127.0.0.1:" + std::to_string(clusterPort) + "/" + dbName),
+	  id_(id),
 	  stopped_(stopped),
-	  kReplicationConfigFilename(ReplicationConfigFilename),
 	  kStoragePath(StoragePath),
 	  kRpcPort(rpcPort),
 	  kHttpPort(httpPort),
+	  kClusterPort(clusterPort),
 	  dbName_(dbName) {
 	// Init server in thread
 	stopped_ = false;
@@ -148,6 +156,8 @@ ServerControl::Interface::Interface(size_t id, std::atomic_bool& stopped, const 
         "net:\n"
         "   httpaddr: 0.0.0.0:" + std::to_string(kHttpPort) + "\n"
 		"   rpcaddr: 0.0.0.0:" + std::to_string(kRpcPort) + "\n" +
+		"   clusteraddr: 0.0.0.0:" + std::to_string(kClusterPort) + "\n" +
+		(rpcClusterPort ? "   rpcclusteraddr: 0.0.0.0:"+std::to_string(rpcClusterPort)+"\n":"")+
 		(maxUpdatesSize?
 		"   maxupdatessize:" + std::to_string(maxUpdatesSize)+"\n" : "");
 	// clang-format on
@@ -163,8 +173,9 @@ ServerControl::Interface::Interface(size_t id, std::atomic_bool& stopped, const 
 		assert(res == EXIT_SUCCESS);
 	}));
 	while (!srv.IsRunning() || !srv.IsReady()) {
-		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
 	}
+
 	// init client
 	string dsn = "cproto://127.0.0.1:" + std::to_string(kRpcPort) + "/" + dbName_;
 	err = api.reindexer->Connect(dsn, client::ConnectOpts().CreateDBIfMissing());
@@ -232,11 +243,12 @@ ServerControl::Interface::Ptr ServerControl::Get(bool wait) {
 	return interface;
 }
 
-void ServerControl::InitServer(size_t id, unsigned short rpcPort, unsigned short httpPort, const std::string& storagePath,
-							   const std::string& dbName, bool enableStats, size_t maxUpdatesSize) {
+void ServerControl::InitServer(size_t id, unsigned short rpcPort, unsigned short httpPort, unsigned short clusterPort,
+							   const std::string& storagePath, const std::string& dbName, bool enableStats, size_t maxUpdatesSize,
+							   unsigned short rpcClusterPort) {
 	WLock lock(mtx_);
-	auto srvInterface = std::make_shared<ServerControl::Interface>(id, *stopped_, kReplicationConfigFilename, storagePath, httpPort,
-																   rpcPort, dbName, enableStats, maxUpdatesSize);
+	auto srvInterface = std::make_shared<ServerControl::Interface>(id, *stopped_, storagePath, httpPort, rpcPort, clusterPort, dbName,
+																   enableStats, maxUpdatesSize, rpcClusterPort);
 	interface = srvInterface;
 }
 void ServerControl::Drop() {

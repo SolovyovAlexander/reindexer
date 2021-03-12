@@ -22,6 +22,7 @@
 #define HAVE_SELECT_LOOP 1
 #ifdef __linux__
 #define HAVE_EPOLL_LOOP 1
+#define HAVE_EVENT_FD 1
 #elif defined(__APPLE__) || (defined __unix__)
 #define HAVE_POLL_LOOP 1
 #endif
@@ -38,6 +39,21 @@ const int ERROR = 0x08;
 class dynamic_loop;
 
 #ifdef HAVE_POSIX_LOOP
+#ifdef HAVE_EVENT_FD
+class loop_posix_base {
+public:
+	void enable_asyncs();
+	void send_async();
+
+protected:
+	loop_posix_base();
+	~loop_posix_base();
+	bool check_async(int fd);
+
+	int async_fd_ = -1;
+	dynamic_loop *owner_ = nullptr;
+};
+#else	// HAVE_EVENT_FD
 class loop_posix_base {
 public:
 	void enable_asyncs();
@@ -51,6 +67,7 @@ protected:
 	int async_fds_[2] = {-1, -1};
 	dynamic_loop *owner_ = nullptr;
 };
+#endif	// HAVE_EVENT_FD
 
 class loop_poll_backend_private;
 class loop_poll_backend : public loop_posix_base {
@@ -81,8 +98,7 @@ public:
 protected:
 	std::unique_ptr<loop_select_backend_private> private_;
 };
-
-#endif
+#endif	// HAVE_POSIX_LOOP
 
 #ifdef HAVE_EPOLL_LOOP
 class loop_epoll_backend_private;
@@ -152,8 +168,16 @@ public:
 	}
 	template <typename Rep, typename Period>
 	void sleep(std::chrono::duration<Rep, Period> dur);
-	template <typename Rep1, typename Period1, typename Rep2, typename Period2>
-	void granular_sleep(std::chrono::duration<Rep1, Period1> dur, std::chrono::duration<Rep2, Period2> granularity, bool &terminate);
+	template <typename Rep1, typename Period1, typename Rep2, typename Period2, typename TerminateT>
+	void granular_sleep(std::chrono::duration<Rep1, Period1> dur, std::chrono::duration<Rep2, Period2> granularity, TerminateT &terminate);
+	void yield() {
+		// Yield is allowed for loop-thread only
+		assert(coroTid_ == std::thread::id() || coroTid_ == std::this_thread::get_id());
+		auto id = coroutine::current();
+		assert(id);
+		yielded_tasks_.emplace_back(id);
+		coroutine::suspend();
+	}
 
 protected:
 	void set(int fd, io *watcher, int events);
@@ -189,6 +213,7 @@ protected:
 	using tasks_container = h_vector<coroutine::routine_t, 64>;
 	tasks_container new_tasks_;
 	tasks_container running_tasks_;
+	h_vector<coroutine::routine_t, 5> yielded_tasks_;
 	int64_t cmpl_cb_id_ = 0;
 	std::thread::id coroTid_;
 
@@ -220,6 +245,9 @@ public:
 	}
 	void enable_asyncs() {
 		if (loop_) loop_->backend_.enable_asyncs();
+	}
+	void spawn(std::function<void()> func, size_t stack_size = coroutine::k_default_stack_limit) {
+		if (loop_) loop_->spawn(std::move(func), stack_size);
 	}
 
 protected:
@@ -350,9 +378,9 @@ void dynamic_loop::sleep(std::chrono::duration<Rep, Period> dur) {
 	}
 }
 
-template <typename Rep1, typename Period1, typename Rep2, typename Period2>
+template <typename Rep1, typename Period1, typename Rep2, typename Period2, typename TerminateT>
 void dynamic_loop::granular_sleep(std::chrono::duration<Rep1, Period1> dur, std::chrono::duration<Rep2, Period2> granularity,
-								  bool &terminate) {
+								  TerminateT &terminate) {
 	for (std::chrono::nanoseconds t = dur; t.count() > 0; t -= granularity) {
 		if (terminate) {
 			return;

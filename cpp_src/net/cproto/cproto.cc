@@ -78,6 +78,18 @@ string_view CmdName(uint16_t cmd) {
 			return "Updates"_sv;
 		case kCmdGetSQLSuggestions:
 			return "GetSQLSuggestions"_sv;
+		case kCmdGetSnapshot:
+			return "GetSnapshot"_sv;
+		case kCmdFetchSnapshot:
+			return "FetchSnapshot"_sv;
+		case kCmdApplySnapshotCh:
+			return "ApplyShanpshotChunk"_sv;
+		case kCmdSuggestLeader:
+			return "SuggestLeader"_sv;
+		case kCmdLeadersPing:
+			return "LeadersPing"_sv;
+		case kCmdGetRaftInfo:
+			return "GetRaftInfo"_sv;
 		default:
 			return "Unknown"_sv;
 	}

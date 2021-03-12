@@ -1,6 +1,7 @@
 #include "namespacedef.h"
 #include <unordered_map>
 #include "cjson/jsonbuilder.h"
+#include "namespace/namespace.h"
 #include "string.h"
 #include "tools/errors.h"
 #include "tools/jsontools.h"
@@ -48,6 +49,10 @@ void NamespaceDef::GetJSON(WrSerializer &ser, int formatFlags) const {
 	if (!schemaJson.empty()) {
 		json.Put("schema", schemaJson);
 	}
+}
+
+bool EnumNamespacesOpts::MatchFilter(string_view nsName, std::shared_ptr<Namespace> ns, const RdxContext &ctx) const {
+	return MatchNameFilter(nsName) && (!IsHideTemporary() || !ns->IsTemporary(ctx));
 }
 
 }  // namespace reindexer

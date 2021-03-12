@@ -24,14 +24,15 @@ Item TransactionImpl::GetItem(TransactionStep &&st) {
 }
 
 TransactionImpl::TransactionImpl(const string &nsName, const PayloadType &pt, const TagsMatcher &tm, const FieldsSet &pf,
-								 std::shared_ptr<const Schema> schema)
+								 std::shared_ptr<const Schema> schema, lsn_t lsn)
 	: payloadType_(pt),
 	  tagsMatcher_(tm),
 	  pkFields_(pf),
 	  schema_(std::move(schema)),
 	  nsName_(nsName),
 	  tagsUpdated_(false),
-	  startTime_(std::chrono::high_resolution_clock::now()) {}
+	  startTime_(std::chrono::high_resolution_clock::now()),
+	  lsn_(lsn) {}
 
 void TransactionImpl::UpdateTagsMatcherFromItem(ItemImpl *ritem) {
 	if (ritem->Type().get() != payloadType_.get() || (ritem->tagsMatcher().isUpdated() && !tagsMatcher_.try_merge(ritem->tagsMatcher()))) {
@@ -55,35 +56,35 @@ void TransactionImpl::UpdateTagsMatcherFromItem(ItemImpl *ritem) {
 	}
 }
 
-void TransactionImpl::Insert(Item &&item) {
+void TransactionImpl::Insert(Item &&item, lsn_t lsn) {
 	std::unique_lock<std::mutex> lock(mtx_);
 	checkTagsMatcher(item);
-	steps_.emplace_back(TransactionStep{move(item), ModeInsert});
+	steps_.emplace_back(TransactionStep{move(item), ModeInsert, lsn});
 }
-void TransactionImpl::Update(Item &&item) {
+void TransactionImpl::Update(Item &&item, lsn_t lsn) {
 	std::unique_lock<std::mutex> lock(mtx_);
 	checkTagsMatcher(item);
-	steps_.emplace_back(TransactionStep{move(item), ModeUpdate});
+	steps_.emplace_back(TransactionStep{move(item), ModeUpdate, lsn});
 }
-void TransactionImpl::Upsert(Item &&item) {
+void TransactionImpl::Upsert(Item &&item, lsn_t lsn) {
 	std::unique_lock<std::mutex> lock(mtx_);
 	checkTagsMatcher(item);
-	steps_.emplace_back(TransactionStep{move(item), ModeUpsert});
+	steps_.emplace_back(TransactionStep{move(item), ModeUpsert, lsn});
 }
-void TransactionImpl::Delete(Item &&item) {
+void TransactionImpl::Delete(Item &&item, lsn_t lsn) {
 	std::unique_lock<std::mutex> lock(mtx_);
 	checkTagsMatcher(item);
-	steps_.emplace_back(TransactionStep{move(item), ModeDelete});
+	steps_.emplace_back(TransactionStep{move(item), ModeDelete, lsn});
 }
-void TransactionImpl::Modify(Item &&item, ItemModifyMode mode) {
+void TransactionImpl::Modify(Item &&item, ItemModifyMode mode, lsn_t lsn) {
 	std::unique_lock<std::mutex> lock(mtx_);
 	checkTagsMatcher(item);
-	steps_.emplace_back(TransactionStep{move(item), mode});
+	steps_.emplace_back(TransactionStep{move(item), mode, lsn});
 }
 
-void TransactionImpl::Modify(Query &&query) {
+void TransactionImpl::Modify(Query &&query, lsn_t lsn) {
 	std::unique_lock<std::mutex> lock(mtx_);
-	steps_.emplace_back(TransactionStep(std::move(query)));
+	steps_.emplace_back(TransactionStep(std::move(query), lsn));
 }
 
 }  // namespace reindexer

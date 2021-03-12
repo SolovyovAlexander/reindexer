@@ -52,7 +52,7 @@ protected:
 		vector<std::unique_ptr<IServerConnection>> idle_;
 		std::chrono::time_point<std::chrono::steady_clock> ts_;
 	};
-	Listener(ev::dynamic_loop &loop, std::shared_ptr<Shared> shared);
+	Listener(ev::dynamic_loop &loop, std::shared_ptr<Shared> shared, bool cloned);
 	static void clone(std::shared_ptr<Shared>);
 
 	ev::io io_;
@@ -62,6 +62,7 @@ protected:
 	std::shared_ptr<Shared> shared_;
 	vector<std::unique_ptr<IServerConnection>> connections_;
 	uint64_t id_;
+	const bool cloned_ = false;
 };
 }  // namespace net
 }  // namespace reindexer

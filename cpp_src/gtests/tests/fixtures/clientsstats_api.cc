@@ -22,7 +22,9 @@ void ClientsStatsApi::RunServerInThread(bool statEnable) {
 		"   rpclog: \n"
 		"   serverlog: \n"
 		"net:\n"
-		"   rpcaddr: " + kipaddress + ":" + kport + "\n"
+		"   rpcaddr: " + kipaddress + ":" + kRPCPort + "\n"
+		"   httpaddr: " + kipaddress + ":" + kClusterPort + "\n"
+		"   clusteraddr: " + kipaddress + ":" + kHttpPort + "\n"
 		"   security: true\n";
 	// clang-format on
 
@@ -47,7 +49,7 @@ void ClientsStatsApi::TearDown() {
 }
 
 std::string ClientsStatsApi::GetConnectionString() {
-	std::string ret = "cproto://" + kUserName + ":" + kPassword + "@" + kipaddress + ":" + kport + "/" + kdbName;
+	std::string ret = "cproto://" + kUserName + ":" + kPassword + "@" + kipaddress + ":" + kRPCPort + "/" + kdbName;
 	return ret;
 }
 

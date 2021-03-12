@@ -4,6 +4,7 @@
 #include "core/keyvalue/variant.h"
 #include "estl/span.h"
 #include "tools/errors.h"
+#include "tools/lsn.h"
 
 namespace reindexer {
 using std::vector;
@@ -167,7 +168,7 @@ public:
 	int GetID() { return id_; }
 	/// Get internal version of item
 	/// @return version of item
-	int64_t GetLSN();
+	lsn_t GetLSN();
 	/// Get count of indexed field
 	/// @return count of  field
 	int NumFields();
@@ -207,7 +208,7 @@ private:
 	explicit Item(ItemImpl *impl) : impl_(impl) {}
 	explicit Item(const Error &err) : impl_(nullptr), status_(err) {}
 	void setID(int id) { id_ = id; }
-	void setLSN(int64_t lsn);
+	void setLSN(lsn_t lsn);
 
 	ItemImpl *impl_;
 	Error status_;
@@ -221,6 +222,8 @@ private:
 	friend class TransactionStep;
 	friend class client::ReindexerImpl;
 	friend class client::Namespace;
+	friend class SnapshotHandler;
+	friend class ClusterProxy;
 };
 
 }  // namespace reindexer

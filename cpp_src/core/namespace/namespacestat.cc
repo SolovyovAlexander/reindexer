@@ -281,4 +281,54 @@ void TxPerfStat::GetJSON(JsonBuilder &builder) {
 	builder.Put("max_copy_time_us", maxCopyTimeUs);
 }
 
+static string_view nsClusterizationRoleToStr(NsClusterizationStatus::Role role) {
+	switch (role) {
+		case NsClusterizationStatus::Role::ClusterReplica:
+			return "cluster_replica"_sv;
+		case NsClusterizationStatus::Role::SimpleReplica:
+			return "simple_replica"_sv;
+		case NsClusterizationStatus::Role::None:
+		default:
+			return "none"_sv;
+	}
+}
+
+static NsClusterizationStatus::Role strToNsClusterizationRole(string_view role) {
+	if (role == "cluster_replica"_sv) {
+		return NsClusterizationStatus::Role::ClusterReplica;
+	} else if (role == "simple_replica"_sv) {
+		return NsClusterizationStatus::Role::SimpleReplica;
+	}
+	return NsClusterizationStatus::Role::None;
+}
+
+void NsClusterizationStatus::GetJSON(JsonBuilder &builder) {
+	builder.Put("leader_id", leaderId);
+	builder.Put("role", nsClusterizationRoleToStr(role));
+}
+
+void NsClusterizationStatus::FromJSON(const gason::JsonNode &root) {
+	leaderId = root["leader_id"].As<int>();
+	role = strToNsClusterizationRole(root["role"].As<string_view>());
+}
+
+void ReplicationStateV2::GetJSON(JsonBuilder &builder) {
+	builder.Put("last_lsn", int64_t(lastLsn));
+	builder.Put("data_hash", dataHash);
+	auto clusterObj = builder.Object("cluster_status");
+	clusterStatus.GetJSON(clusterObj);
+}
+
+void ReplicationStateV2::FromJSON(span<char> json) {
+	try {
+		gason::JsonParser parser;
+		auto root = parser.Parse(json);
+		lastLsn = lsn_t(root["last_lsn"].As<int64_t>());
+		dataHash = root["data_hash"].As<uint64_t>();
+		clusterStatus.FromJSON(root["cluster_status"]);
+	} catch (const gason::Exception &ex) {
+		throw Error(errParseJson, "ReplicationState: %s", ex.what());
+	}
+}
+
 }  // namespace reindexer

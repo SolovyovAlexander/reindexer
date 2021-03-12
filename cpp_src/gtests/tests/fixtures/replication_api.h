@@ -18,6 +18,7 @@ using std::shared_ptr;
 const size_t kDefaultServerCount = 4;
 const size_t kDefaultRpcPort = 4444;
 const size_t kDefaultHttpPort = 5555;
+const size_t kDefaultClusterPort = 6666;
 const auto kMaxServerStartTime = std::chrono::seconds(15);
 const auto kMaxSyncTime = std::chrono::seconds(15);
 const auto kMaxForceSyncCmdTime = std::chrono::seconds(10);

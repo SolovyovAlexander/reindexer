@@ -14,7 +14,7 @@ CoroQueryResults::CoroQueryResults(int fetchFlags)
 	: conn_(nullptr), queryID_(0), fetchOffset_(0), fetchFlags_(fetchFlags), fetchAmount_(0), requestTimeout_(0) {}
 
 CoroQueryResults::CoroQueryResults(net::cproto::CoroClientConnection *conn, NSArray &&nsArray, int fetchFlags, int fetchAmount,
-								   seconds timeout)
+								   milliseconds timeout)
 	: conn_(conn),
 	  nsArray_(std::move(nsArray)),
 	  queryID_(0),
@@ -24,7 +24,7 @@ CoroQueryResults::CoroQueryResults(net::cproto::CoroClientConnection *conn, NSAr
 	  requestTimeout_(timeout) {}
 
 CoroQueryResults::CoroQueryResults(net::cproto::CoroClientConnection *conn, NSArray &&nsArray, string_view rawResult, int queryID,
-								   int fetchFlags, int fetchAmount, seconds timeout)
+								   int fetchFlags, int fetchAmount, milliseconds timeout)
 	: CoroQueryResults(conn, std::move(nsArray), fetchFlags, fetchAmount, timeout) {
 	Bind(rawResult, queryID);
 }
@@ -61,7 +61,7 @@ void CoroQueryResults::Bind(string_view rawResult, int queryID) {
 void CoroQueryResults::fetchNextResults() {
 	using std::chrono::seconds;
 	int flags = fetchFlags_ ? (fetchFlags_ & ~kResultsWithPayloadTypes) : kResultsCJson;
-	auto ret = conn_->Call({cproto::kCmdFetchResults, requestTimeout_, milliseconds(0), nullptr}, queryID_, flags,
+	auto ret = conn_->Call({cproto::kCmdFetchResults, requestTimeout_, milliseconds(0), lsn_t(), int(-1), nullptr}, queryID_, flags,
 						   queryParams_.count + fetchOffset_, fetchAmount_);
 	if (!ret.Status().ok()) {
 		throw ret.Status();

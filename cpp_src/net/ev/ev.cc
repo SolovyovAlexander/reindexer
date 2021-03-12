@@ -5,6 +5,9 @@
 #include <algorithm>
 #include "tools/oscompat.h"
 
+#ifdef HAVE_EVENT_FD
+#include <sys/eventfd.h>
+#endif
 #ifdef HAVE_SELECT_LOOP
 #include <sys/select.h>
 #endif
@@ -20,6 +23,40 @@ namespace net {
 namespace ev {
 
 #ifdef HAVE_POSIX_LOOP
+#ifdef HAVE_EVENT_FD
+loop_posix_base::loop_posix_base() {}
+loop_posix_base::~loop_posix_base() {
+	if (async_fd_ >= 0) {
+		close(async_fd_);
+	}
+}
+
+void loop_posix_base::enable_asyncs() {
+	if (async_fd_ < 0) {
+		async_fd_ = eventfd(0, EFD_NONBLOCK);
+		if (async_fd_ < 0) {
+			perror("eventfd:");
+		}
+		owner_->set(async_fd_, nullptr, READ);
+	}
+}
+
+void loop_posix_base::send_async() {
+	int res = eventfd_write(async_fd_, 1);
+	(void)res;
+}
+
+bool loop_posix_base::check_async(int fd) {
+	if (fd == async_fd_) {
+		eventfd_t val;
+		int res = eventfd_read(fd, &val);
+		(void)res;
+		owner_->async_callback();
+		return true;
+	}
+	return false;
+}
+#else	// HAVE_EVENT_FD
 loop_posix_base::loop_posix_base() {}
 loop_posix_base::~loop_posix_base() {
 	if (async_fds_[0] >= 0) {
@@ -54,7 +91,8 @@ bool loop_posix_base::check_async(int fd) {
 	}
 	return false;
 }
-#endif
+#endif	// HAVE_EVENT_FD
+#endif	// HAVE_POSIX_LOOP
 
 #ifdef HAVE_SELECT_LOOP
 class loop_select_backend_private {
@@ -415,13 +453,14 @@ void dynamic_loop::run() {
 			}
 		}
 
-		if (has_coro_tasks && running_tasks_.empty()) {
+		if (has_coro_tasks && running_tasks_.empty() && yielded_tasks_.empty()) {
 			break;
 		}
 
-		int tv = gEnableBusyLoop ? 0 : -1;
+		bool busy_loop = gEnableBusyLoop || yielded_tasks_.size();
+		int tv = busy_loop ? 0 : -1;
 
-		if (!gEnableBusyLoop && timers_.size()) {
+		if (!busy_loop && timers_.size()) {
 			tv = std::chrono::duration_cast<std::chrono::microseconds>(timers_.front()->deadline_ - now).count();
 			if (tv < 0) tv = 0;
 		}
@@ -442,8 +481,9 @@ void dynamic_loop::run() {
 			}
 		}
 		if (ret >= 0 && timers_.size()) {
-			if (!gEnableBusyLoop || !(++count % 100)) {
+			if (!busy_loop || ++count == 100) {
 				now = std::chrono::steady_clock::now();
+				count = 0;
 			}
 			while (timers_.size() && now >= timers_.front()->deadline_) {
 				auto tim = timers_.front();
@@ -451,6 +491,12 @@ void dynamic_loop::run() {
 				tim->callback(1);
 			}
 		}
+		h_vector<coroutine::routine_t, 5> yielded_tasks;
+		std::swap(yielded_tasks, yielded_tasks_);
+		for (auto id : yielded_tasks) {
+			coroutine::resume(id);
+		}
+		yielded_tasks.clear();
 	}
 	remove_coro_cb();
 }

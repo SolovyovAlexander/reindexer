@@ -4,6 +4,7 @@
 #include <unordered_map>
 #include "core/cbinding/resultserializer.h"
 #include "core/keyvalue/variant.h"
+#include "core/namespace/snapshot/snapshot.h"
 #include "core/reindexer.h"
 #include "dbmanager.h"
 #include "loggerwrapper.h"
@@ -27,6 +28,7 @@ using namespace reindexer;
 struct RPCClientData : public cproto::ClientData {
 	~RPCClientData();
 	h_vector<pair<QueryResults, bool>, 1> results;
+	h_vector<pair<Snapshot, bool>, 1> snapshots;
 	vector<Transaction> txs;
 	std::shared_ptr<TxStats> txStats;
 
@@ -44,7 +46,9 @@ public:
 	~RPCServer();
 
 	bool Start(const string &addr, ev::dynamic_loop &loop, bool enableStat, size_t maxUpdatesSize);
-	void Stop() { listener_->Stop(); }
+	void Stop() {
+		if (listener_) listener_->Stop();
+	}
 
 	Error Ping(cproto::Context &ctx);
 	Error Login(cproto::Context &ctx, p_string login, p_string password, p_string db, cproto::optional<bool> createDBIfMissing,
@@ -58,6 +62,7 @@ public:
 	Error DropNamespace(cproto::Context &ctx, p_string ns);
 	Error TruncateNamespace(cproto::Context &ctx, p_string ns);
 	Error RenameNamespace(cproto::Context &ctx, p_string srcNsName, p_string dstNsName);
+	Error CreateTemporaryNamespace(cproto::Context &ctx, p_string ns);
 
 	Error CloseNamespace(cproto::Context &ctx, p_string ns);
 	Error EnumNamespaces(cproto::Context &ctx, cproto::optional<int> opts, cproto::optional<p_string> filter);
@@ -91,6 +96,10 @@ public:
 	Error FetchResults(cproto::Context &ctx, int reqId, int flags, int offset, int limit);
 	Error CloseResults(cproto::Context &ctx, int reqId);
 	Error GetSQLSuggestions(cproto::Context &ctx, p_string query, int pos);
+	Error GetReplState(cproto::Context &ctx, p_string ns);
+	Error GetSnapshot(cproto::Context &ctx, p_string ns, int64_t from);
+	Error FetchSnapshot(cproto::Context &ctx, int id, int64_t offset);
+	Error ApplySnapshotChunk(cproto::Context &ctx, p_string ns, p_string rec);
 
 	Error GetMeta(cproto::Context &ctx, p_string ns, p_string key);
 	Error PutMeta(cproto::Context &ctx, p_string ns, p_string key, p_string data);
@@ -112,6 +121,9 @@ protected:
 	Transaction &getTx(cproto::Context &ctx, int64_t id);
 	int64_t addTx(cproto::Context &ctx, string_view nsName);
 	void clearTx(cproto::Context &ctx, uint64_t txId);
+	Snapshot &getSnapshot(cproto::Context &ctx, int &id);
+	Error fetchSnapshotRecords(cproto::Context &ctx, int id, int64_t offset, bool putHeader);
+	void freeSnapshot(cproto::Context &ctx, int id);
 
 	Reindexer getDB(cproto::Context &ctx, UserRole role);
 	constexpr static string_view statsSourceName() { return "rpc"_sv; }

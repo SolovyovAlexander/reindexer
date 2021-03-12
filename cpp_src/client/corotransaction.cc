@@ -7,23 +7,22 @@
 namespace reindexer {
 namespace client {
 
-Error CoroTransaction::Modify(Query&& query) {
+Error CoroTransaction::Modify(Query&& query, lsn_t lsn) {
 	if (conn_) {
 		WrSerializer ser;
 		query.Serialize(ser);
-		auto ret = conn_->Call({cproto::kCmdUpdateQueryTx, RequestTimeout_, execTimeout_, nullptr}, ser.Slice(), txId_).Status();
-		if (!ret.ok()) return ret;
+		return conn_->Call({cproto::kCmdUpdateQueryTx, requestTimeout_, execTimeout_, lsn, -1, nullptr}, ser.Slice(), txId_).Status();
 	}
 	return Error(errLogic, "Connection pointer in transaction is nullptr.");
 }
 
-Error CoroTransaction::addTxItem(Item&& item, ItemModifyMode mode) {
+Error CoroTransaction::addTxItem(Item&& item, ItemModifyMode mode, lsn_t lsn) {
 	auto itData = item.GetJSON();
 	p_string itemData(&itData);
 	if (conn_) {
 		for (int tryCount = 0;; tryCount++) {
-			auto ret =
-				conn_->Call({net::cproto::kCmdAddTxItem, RequestTimeout_, execTimeout_, nullptr}, FormatJson, itemData, mode, "", 0, txId_);
+			auto ret = conn_->Call({net::cproto::kCmdAddTxItem, requestTimeout_, execTimeout_, lsn, -1, nullptr}, FormatJson, itemData,
+								   mode, "", 0, txId_);
 
 			if (!ret.Status().ok()) {
 				if (ret.Status().code() != errStateInvalidated || tryCount > 2) return ret.Status();

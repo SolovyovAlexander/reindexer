@@ -1,5 +1,7 @@
 #include "namespace.h"
 #include "core/storage/storagefactory.h"
+#include "snapshot/snapshothandler.h"
+#include "snapshot/snapshotrecord.h"
 #include "tools/fsops.h"
 #include "tools/logger.h"
 
@@ -7,7 +9,7 @@ namespace reindexer {
 
 #define handleInvalidation(Fn) nsFuncWrapper<decltype(&Fn), &Fn>
 
-void Namespace::CommitTransaction(Transaction& tx, QueryResults& result, const RdxContext& ctx) {
+void Namespace::CommitTransaction(Transaction& tx, QueryResults& result, const NsContext& ctx) {
 	auto ns = atomicLoadMainNs();
 	bool enablePerfCounters = ns->enablePerfCounters_.load(std::memory_order_relaxed);
 	if (enablePerfCounters) {
@@ -16,7 +18,7 @@ void Namespace::CommitTransaction(Transaction& tx, QueryResults& result, const R
 	PerfStatCalculatorMT txCommitCalc(commitStatsCounter_, enablePerfCounters);
 	if (needNamespaceCopy(ns, tx)) {
 		PerfStatCalculatorMT calc(ns->updatePerfCounter_, enablePerfCounters);
-		contexted_unique_lock<Mutex, const RdxContext> lck(clonerMtx_, &ctx);
+		contexted_unique_lock<Mutex, const RdxContext> lck(clonerMtx_, &ctx.rdxContext);
 		ns = ns_;
 		if (needNamespaceCopy(ns, tx)) {
 			PerfStatCalculatorMT nsCopyCalc(copyStatsCounter_, enablePerfCounters);
@@ -26,16 +28,15 @@ void Namespace::CommitTransaction(Transaction& tx, QueryResults& result, const R
 			hasCopy_.store(true, std::memory_order_release);
 			ns->cancelCommit_ = true;  // -V519
 			try {
-				auto lck = ns->rLock(ctx);
+				auto lck = ns->rLock(ctx.rdxContext);
 				auto storageLock = ns->locker_.StorageLock();
 				ns->cancelCommit_ = false;	// -V519
 				nsCopy_.reset(new NamespaceImpl(*ns));
 				nsCopyCalc.HitManualy();
-				nsCopy_->CommitTransaction(tx, result, NsContext(ctx).NoLock());
-				if (nsCopy_->lastUpdateTime_) {
-					nsCopy_->lastUpdateTime_ -= nsCopy_->config_.optimizationTimeout * 2;
-					nsCopy_->optimizeIndexes(NsContext(ctx).NoLock());
-				}
+				NsContext nsCtx(ctx);
+				nsCtx.CopiedNsRequest();
+				nsCopy_->CommitTransaction(tx, result, nsCtx);
+				nsCopy_->optimizeIndexes(nsCtx);
 				calc.SetCounter(nsCopy_->updatePerfCounter_);
 				ns->markReadOnly();
 				atomicStoreMainNs(nsCopy_.release());
@@ -49,7 +50,7 @@ void Namespace::CommitTransaction(Transaction& tx, QueryResults& result, const R
 			return;
 		}
 	}
-	handleInvalidation(NamespaceImpl::CommitTransaction)(tx, result, NsContext(ctx));
+	handleInvalidation(NamespaceImpl::CommitTransaction)(tx, result, ctx);
 }
 
 NamespacePerfStat Namespace::GetPerfStat(const RdxContext& ctx) {
@@ -68,6 +69,15 @@ NamespacePerfStat Namespace::GetPerfStat(const RdxContext& ctx) {
 	return stats;
 }
 
+void Namespace::ApplySnapshotChunk(const SnapshotChunk& ch, const RdxContext& ctx) {
+	if (!ch.IsTx() || ch.IsShallow() || !ch.IsWAL()) {
+		return handleInvalidation(NamespaceImpl::ApplySnapshotChunk)(ch, ctx);
+	} else {
+		SnapshotTxHandler handler(*this);
+		handler.ApplyChunk(ch, ctx);
+	}
+}
+
 bool Namespace::needNamespaceCopy(const NamespaceImpl::Ptr& ns, const Transaction& tx) const noexcept {
 	auto stepsCount = tx.GetSteps().size();
 	auto startCopyPolicyTxSize = static_cast<uint32_t>(startCopyPolicyTxSize_.load(std::memory_order_relaxed));
@@ -82,13 +92,13 @@ void Namespace::doRename(Namespace::Ptr dst, const std::string& newName, const s
 	handleInvalidation(NamespaceImpl::flushStorage)(ctx);
 	auto lck = handleInvalidation(NamespaceImpl::wLock)(ctx);
 	auto& srcNs = *atomicLoadMainNs();	// -V758
-	NamespaceImpl::Mutex* dstMtx = nullptr;
+	std::unique_lock<NamespaceImpl::Mutex> dstLck;
 	NamespaceImpl::Ptr dstNs;
 	if (dst) {
 		while (true) {
 			try {
 				dstNs = dst->awaitMainNs(ctx);
-				dstMtx = dstNs->wLock(ctx).release();
+				dstLck = std::unique_lock<NamespaceImpl::Mutex>(*dstNs->wLock(ctx).release(), adopt_lock_t());
 				break;
 			} catch (const Error& e) {
 				if (e.code() != errNamespaceInvalidated) {
@@ -98,10 +108,13 @@ void Namespace::doRename(Namespace::Ptr dst, const std::string& newName, const s
 				}
 			}
 		}
+
+		dstNs->checkClusterRole(ctx);
 		dbpath = dstNs->dbpath_;
 	} else if (newName == srcNs.name_) {
 		return;
 	}
+	srcNs.checkClusterRole(ctx);
 
 	if (dbpath.empty()) {
 		dbpath = fs::JoinPath(storagePath, newName);
@@ -118,8 +131,8 @@ void Namespace::doRename(Namespace::Ptr dst, const std::string& newName, const s
 		int renameRes = fs::Rename(srcNs.dbpath_, dbpath);
 		if (renameRes < 0) {
 			if (dst) {
-				assert(dstMtx);
-				dstMtx->unlock();
+				assert(dstLck.owns_lock());
+				dstLck.unlock();
 			}
 			throw Error(errParams, "Unable to rename '%s' to '%s'", srcNs.dbpath_, dbpath);
 		}
@@ -128,8 +141,8 @@ void Namespace::doRename(Namespace::Ptr dst, const std::string& newName, const s
 	if (dst) {
 		logPrintf(LogInfo, "Rename namespace '%s' to '%s'", srcNs.name_, dstNs->name_);
 		srcNs.name_ = dstNs->name_;
-		assert(dstMtx);
-		dstMtx->unlock();
+		assert(dstLck.owns_lock());
+		dstLck.unlock();
 	} else {
 		logPrintf(LogInfo, "Rename namespace '%s' to '%s'", srcNs.name_, newName);
 		srcNs.name_ = newName;

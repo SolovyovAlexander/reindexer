@@ -3,11 +3,12 @@
 #include <functional>
 #include <string>
 #include "client/coroqueryresults.h"
+#include "client/cororeindexerconfig.h"
 #include "client/corotransaction.h"
 #include "client/internalrdxcontext.h"
 #include "client/item.h"
 #include "client/namespace.h"
-#include "client/reindexerconfig.h"
+#include "cluster/config.h"
 #include "core/keyvalue/p_string.h"
 #include "core/namespacedef.h"
 #include "core/query/query.h"
@@ -20,23 +21,27 @@
 
 namespace reindexer {
 
+struct ReplicationStateV2;
+class SnapshotChunk;
+
 namespace client {
 
-using std::string;
-using std::chrono::seconds;
+class Snapshot;
 
 using namespace net;
 class CoroRPCClient {
 public:
+	using NodeData = cluster::NodeData;
+	using RaftInfo = cluster::RaftInfo;
 	typedef std::function<void(const Error &err)> Completion;
-	CoroRPCClient(const ReindexerConfig &config);
+	CoroRPCClient(const CoroReindexerConfig &config);
 	CoroRPCClient(const CoroRPCClient &) = delete;
 	CoroRPCClient(CoroRPCClient &&) = delete;
 	CoroRPCClient &operator=(const CoroRPCClient &) = delete;
 	CoroRPCClient &operator=(CoroRPCClient &&) = delete;
 	~CoroRPCClient();
 
-	Error Connect(const string &dsn, ev::dynamic_loop &loop, const client::ConnectOpts &opts);
+	Error Connect(const string &dsn, ev::dynamic_loop &loop, const ConnectOpts &opts);
 	Error Stop();
 
 	Error OpenNamespace(string_view nsName, const InternalRdxContext &ctx,
@@ -44,6 +49,8 @@ public:
 	Error AddNamespace(const NamespaceDef &nsDef, const InternalRdxContext &ctx);
 	Error CloseNamespace(string_view nsName, const InternalRdxContext &ctx);
 	Error DropNamespace(string_view nsName, const InternalRdxContext &ctx);
+	Error CreateTemporaryNamespace(string_view baseName, std::string &resultName, const InternalRdxContext &ctx,
+								   const StorageOpts &opts = StorageOpts().Enabled());
 	Error TruncateNamespace(string_view nsName, const InternalRdxContext &ctx);
 	Error RenameNamespace(string_view srcNsName, const std::string &dstNsName, const InternalRdxContext &ctx);
 	Error AddIndex(string_view nsName, const IndexDef &index, const InternalRdxContext &ctx);
@@ -77,14 +84,20 @@ public:
 	CoroTransaction NewTransaction(string_view nsName, const InternalRdxContext &ctx);
 	Error CommitTransaction(CoroTransaction &tr, const InternalRdxContext &ctx);
 	Error RollBackTransaction(CoroTransaction &tr, const InternalRdxContext &ctx);
+	Error GetReplState(string_view nsName, ReplicationStateV2 &state, const InternalRdxContext &ctx);
+	Error GetSnapshot(string_view nsName, lsn_t from, Snapshot &snapshot, const InternalRdxContext &ctx);
+	Error ApplySnapshotChunk(string_view nsName, const SnapshotChunk &ch, const InternalRdxContext &ctx);
+
+	Error SuggestLeader(const NodeData &suggestion, NodeData &response, const InternalRdxContext &ctx);
+	Error LeadersPing(const NodeData &leader, const InternalRdxContext &ctx);
+	Error GetRaftInfo(RaftInfo &info, const InternalRdxContext &ctx);
 
 protected:
-	Error selectImpl(string_view query, CoroQueryResults &result, seconds netTimeout, const InternalRdxContext &ctx);
-	Error selectImpl(const Query &query, CoroQueryResults &result, seconds netTimeout, const InternalRdxContext &ctx);
-	Error modifyItem(string_view nsName, Item &item, int mode, seconds netTimeout, const InternalRdxContext &ctx);
+	Error selectImpl(string_view query, CoroQueryResults &result, milliseconds netTimeout, const InternalRdxContext &ctx);
+	Error selectImpl(const Query &query, CoroQueryResults &result, milliseconds netTimeout, const InternalRdxContext &ctx);
+	Error modifyItem(string_view nsName, Item &item, int mode, milliseconds netTimeout, const InternalRdxContext &ctx);
 	Error subscribeImpl(bool subscribe);
 	Namespace *getNamespace(string_view nsName);
-	Error addConnectEntry(const string &dsn, const client::ConnectOpts &opts, size_t idx);
 	void onUpdates(const net::cproto::CoroRPCAnswer &ans);
 	void startResubRoutine();
 
@@ -92,11 +105,11 @@ protected:
 	void onConnFatalError(Error) noexcept { subscribed_ = false; }
 
 	cproto::CommandParams mkCommand(cproto::CmdCode cmd, const InternalRdxContext *ctx = nullptr) const noexcept;
-	static cproto::CommandParams mkCommand(cproto::CmdCode cmd, seconds reqTimeout, const InternalRdxContext *ctx) noexcept;
+	static cproto::CommandParams mkCommand(cproto::CmdCode cmd, milliseconds reqTimeout, const InternalRdxContext *ctx) noexcept;
 
 	fast_hash_map<string, Namespace::Ptr, nocase_hash_str, nocase_equal_str> namespaces_;
 
-	ReindexerConfig config_;
+	CoroReindexerConfig config_;
 	UpdatesObservers observers_;
 	cproto::CoroClientConnection conn_;
 	bool subscribed_ = false;

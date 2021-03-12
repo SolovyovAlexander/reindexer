@@ -277,7 +277,7 @@ Error CommandsExecutor<DBInterface>::queryResultsToJson(ostream& o, const typena
 	bool prettyPrint = variables_[kVariableOutput] == kOutputModePretty;
 	for (auto it : r) {
 		if (cancelCtx_.IsCancelled()) break;
-		if (isWALQuery) ser << '#' << it.GetLSN() << ' ';
+		if (isWALQuery) ser << '#' << int64_t(it.GetLSN()) << ' ';
 		if (it.IsRaw()) {
 			reindexer::WALRecord rec(it.GetRaw());
 			rec.Dump(ser, [this, &r](string_view cjson) {

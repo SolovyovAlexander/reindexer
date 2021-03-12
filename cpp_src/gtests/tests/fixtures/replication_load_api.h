@@ -147,8 +147,8 @@ public:
 		EXPECT_TRUE(err.ok()) << err.what();
 		return res;
 	}
-	void RestartWithConfigFile(size_t num, const string &configYaml) {
-		GetSrv(num)->WriteServerConfig(configYaml);
+	void RestartWithReplicationConfigFile(size_t num, const string &configYaml) {
+		GetSrv(num)->WriteReplicationConfig(configYaml);
 		StopServer(num);
 		StartServer(num);
 	}

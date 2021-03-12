@@ -5,10 +5,10 @@
 #include <mutex>
 #include <string>
 #include <vector>
-#include "core/lsn.h"
 #include "estl/span.h"
 #include "gason/gason.h"
 #include "tools/errors.h"
+#include "tools/lsn.h"
 
 namespace reindexer {
 
@@ -85,6 +85,29 @@ struct ReplicationState {
 	lsn_t originLSN;
 	lsn_t lastSelfLSN;
 	lsn_t lastUpstreamLSN;
+};
+
+struct NsClusterizationStatus {
+	void GetJSON(JsonBuilder &builder);
+	void FromJSON(const gason::JsonNode &root);
+
+	enum class Role { None, ClusterReplica, SimpleReplica };
+
+	int leaderId = -1;
+	Role role = Role::None;
+};
+
+// TODO: Rename this
+struct ReplicationStateV2 {
+	void GetJSON(JsonBuilder &builder);
+	void FromJSON(span<char>);
+
+	// LSN of last change
+	// updated from WAL when querying the structure
+	lsn_t lastLsn;
+	uint64_t dataHash = 0;
+	//
+	NsClusterizationStatus clusterStatus;
 };
 
 struct ReplicationStat : public ReplicationState {

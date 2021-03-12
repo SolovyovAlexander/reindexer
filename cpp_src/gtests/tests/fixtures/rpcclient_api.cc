@@ -3,6 +3,9 @@
 #include "tools/fsops.h"
 #include "tools/stringstools.h"
 
+const std::string RPCClientTestApi::kDbPrefix = "/tmp/reindex/rpc_client_test";
+const std::string RPCClientTestApi::kDefaultRPCServerAddr = "127.0.0.1:" + std::to_string(RPCClientTestApi::kDefaultRPCPort);
+
 void RPCClientTestApi::TestServer::Start(const std::string& addr, Error errOnLogin) {
 	dsn_ = addr;
 	serverThread_.reset(new thread([this, addr, errOnLogin]() {
@@ -41,7 +44,7 @@ void RPCClientTestApi::TestServer::Stop() {
 }
 
 void RPCClientTestApi::StartDefaultRealServer() {
-	const std::string dbPath = string(kDbPrefix) + "/" + kDefaultRPCPort;
+	const std::string dbPath = kDbPrefix + "/" + std::to_string(kDefaultRPCPort);
 	reindexer::fs::RmDirAll(dbPath);
 	AddRealServer(dbPath);
 	StartServer();
@@ -51,7 +54,7 @@ void RPCClientTestApi::AddFakeServer(const std::string& addr, const RPCServerCon
 	fakeServers_.emplace(addr, std::unique_ptr<TestServer>(new TestServer(conf)));
 }
 
-void RPCClientTestApi::AddRealServer(const std::string& dbPath, const std::string& addr, uint16_t httpPort) {
+void RPCClientTestApi::AddRealServer(const std::string& dbPath, const std::string& addr, uint16_t httpPort, uint16_t clusterPort) {
 	auto res = realServers_.emplace(addr, ServerData());
 	ASSERT_TRUE(res.second);
 	// clang-format off
@@ -66,7 +69,8 @@ void RPCClientTestApi::AddRealServer(const std::string& dbPath, const std::strin
 			"   serverlog: \n"
 			"net:\n"
 			"   rpcaddr: " + addr + "\n"
-			"   httpaddr: 0.0.0.0:" + std::to_string(httpPort);
+			"   httpaddr: 0.0.0.0:" + std::to_string(httpPort) + "\n"
+			"   clusteraddr: 0.0.0.0:" + std::to_string(clusterPort);
 	// clang-format on
 	Error err = res.first->second.server->InitFromYAML(yaml);
 	ASSERT_TRUE(err.ok()) << err.what();

@@ -5,7 +5,7 @@
 namespace reindexer {
 namespace client {
 
-CoroReindexer::CoroReindexer(const ReindexerConfig& config) : impl_(new CoroRPCClient(config)), owner_(true), ctx_() {}
+CoroReindexer::CoroReindexer(const CoroReindexerConfig& config) : impl_(new CoroRPCClient(config)), owner_(true), ctx_() {}
 CoroReindexer::~CoroReindexer() {
 	if (owner_) {
 		delete impl_;
@@ -22,14 +22,17 @@ CoroReindexer& CoroReindexer::operator=(CoroReindexer&& rdx) noexcept {
 	return *this;
 }
 
-Error CoroReindexer::Connect(const string& dsn, dynamic_loop& loop, const client::ConnectOpts& opts) {
+Error CoroReindexer::Connect(const string& dsn, net::ev::dynamic_loop& loop, const ConnectOpts& opts) {
 	return impl_->Connect(dsn, loop, opts);
 }
 Error CoroReindexer::Stop() { return impl_->Stop(); }
 Error CoroReindexer::AddNamespace(const NamespaceDef& nsDef) { return impl_->AddNamespace(nsDef, ctx_); }
 Error CoroReindexer::OpenNamespace(string_view nsName, const StorageOpts& storage) { return impl_->OpenNamespace(nsName, ctx_, storage); }
-Error CoroReindexer::DropNamespace(string_view nsName) { return impl_->DropNamespace(nsName, ctx_); }
 Error CoroReindexer::CloseNamespace(string_view nsName) { return impl_->CloseNamespace(nsName, ctx_); }
+Error CoroReindexer::DropNamespace(string_view nsName) { return impl_->DropNamespace(nsName, ctx_); }
+Error CoroReindexer::CreateTemporaryNamespace(string_view baseName, std::string& resultName, const StorageOpts& opts) {
+	return impl_->CreateTemporaryNamespace(baseName, resultName, ctx_, opts);
+}
 Error CoroReindexer::TruncateNamespace(string_view nsName) { return impl_->TruncateNamespace(nsName, ctx_); }
 Error CoroReindexer::RenameNamespace(string_view srcNsName, const std::string& dstNsName) {
 	return impl_->RenameNamespace(srcNsName, dstNsName, ctx_);
@@ -63,10 +66,14 @@ Error CoroReindexer::GetSqlSuggestions(const string_view sqlQuery, int pos, vect
 	return impl_->GetSqlSuggestions(sqlQuery, pos, suggests);
 }
 Error CoroReindexer::Status() { return impl_->Status(ctx_); }
-
 CoroTransaction CoroReindexer::NewTransaction(string_view nsName) { return impl_->NewTransaction(nsName, ctx_); }
 Error CoroReindexer::CommitTransaction(CoroTransaction& tr) { return impl_->CommitTransaction(tr, ctx_); }
 Error CoroReindexer::RollBackTransaction(CoroTransaction& tr) { return impl_->RollBackTransaction(tr, ctx_); }
+Error CoroReindexer::GetReplState(string_view nsName, ReplicationStateV2& state) { return impl_->GetReplState(nsName, state, ctx_); }
+Error CoroReindexer::GetSnapshot(string_view nsName, lsn_t from, Snapshot& snapshot) {
+	return impl_->GetSnapshot(nsName, from, snapshot, ctx_);
+}
+Error CoroReindexer::ApplySnapshotChunk(string_view nsName, const SnapshotChunk& ch) { return impl_->ApplySnapshotChunk(nsName, ch, ctx_); }
 
 }  // namespace client
 }  // namespace reindexer

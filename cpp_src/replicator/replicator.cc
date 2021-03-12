@@ -14,8 +14,6 @@ namespace reindexer {
 
 using namespace net;
 
-static constexpr size_t kTmpNsPostfixLen = 20;
-
 Replicator::Replicator(ReindexerImpl *slave)
 	: slave_(slave),
 	  resyncUpdatesLostFlag_(false),
@@ -423,25 +421,18 @@ Error Replicator::syncNamespaceForced(const NamespaceDef &ns, string_view reason
 	logPrintf(LogWarning, "[repl:%s:%s] Start FORCED sync: %s", ns.name, slave_->storagePath_, reason);
 
 	// Create temporary namespace
-	NamespaceDef tmpNsDef;
-	tmpNsDef.isTemporary = true;
-	if (ns.storage.IsEnabled()) {
-		tmpNsDef.storage = StorageOpts().Enabled().CreateIfMissing().SlaveMode();
-	} else {
-		tmpNsDef.storage = StorageOpts().SlaveMode();
-	}
-	Namespace::Ptr tmpNs;
-	tmpNsDef.name = ns.name + "_tmp_" + randStringAlph(kTmpNsPostfixLen);
-	auto err = slave_->AddNamespace(tmpNsDef);
+	std::string tmpNsName;
+	auto err = slave_->CreateTemporaryNamespace(
+		ns.name, tmpNsName, StorageOpts().Enabled(ns.storage.IsEnabled()).CreateIfMissing(ns.storage.IsEnabled()).SlaveMode());
 	if (!err.ok()) {
-		logPrintf(LogWarning, "Unable to create temporary namespace %s for the force sync: %s", tmpNsDef.name, err.what());
+		logPrintf(LogWarning, "Unable to create temporary namespace %s for the force sync: %s", tmpNsName, err.what());
 		return err;
 	}
 
-	tmpNs = slave_->getNamespaceNoThrow(tmpNsDef.name, dummyCtx_);
+	auto tmpNs = slave_->getNamespaceNoThrow(tmpNsName, dummyCtx_);
 	if (!tmpNs) {
-		logPrintf(LogWarning, "Unable to get temporary namespace %s for the force sync:", tmpNsDef.name);
-		return Error(errNotFound, "Namespace %s not found", tmpNsDef.name);
+		logPrintf(LogWarning, "Unable to get temporary namespace %s for the force sync:", tmpNsName);
+		return Error(errNotFound, "Namespace %s not found", tmpNsName);
 	}
 	auto replState = tmpNs->GetReplState(dummyCtx_);
 	if (replState.replicatorEnabled)
@@ -467,12 +458,12 @@ Error Replicator::syncNamespaceForced(const NamespaceDef &ns, string_view reason
 		}
 	}
 	if (err.ok()) {
-		err = slave_->renameNamespace(tmpNsDef.name, ns.name, true);
+		err = slave_->renameNamespace(tmpNsName, ns.name, true);
 		slave_->syncDownstream(ns.name, true);
 	} else {
 		logPrintf(LogError, "[repl:%s] FORCED sync error: %s", ns.name, err.what());
-		auto dropErr = slave_->closeNamespace(tmpNsDef.name, dummyCtx_, true, true);
-		if (!dropErr.ok()) logPrintf(LogWarning, "Unable to drop temporary namespace %s: %s", tmpNsDef.name, dropErr.what());
+		auto dropErr = slave_->closeNamespace(tmpNsName, dummyCtx_, true, true);
+		if (!dropErr.ok()) logPrintf(LogWarning, "Unable to drop temporary namespace %s: %s", tmpNsName, dropErr.what());
 	}
 
 	return err;
@@ -482,7 +473,7 @@ Error Replicator::applyWAL(Namespace::Ptr slaveNs, client::QueryResults &qr) {
 	Error err;
 	SyncStat stat;
 	WrSerializer ser;
-	const auto &nsName = slaveNs->GetName();
+	const auto nsName = slaveNs->GetName(dummyCtx_);
 	// process WAL
 	lsn_t upstreamLSN = slaveNs->GetReplState(dummyCtx_).lastUpstreamLSN;
 	logPrintf(LogTrace, "[repl:%s:%s]:%d applyWAL  lastUpstreamLSN = %s walRecordCount = %d", nsName, slave_->storagePath_,
@@ -643,7 +634,7 @@ Error Replicator::applyWALRecord(LSNPair LSNs, string_view nsName, Namespace::Pt
 			break;
 		// Metadata updated
 		case WalPutMeta:
-			slaveNs->PutMeta(string(rec.putMeta.key), rec.putMeta.value, NsContext(dummyCtx_));
+			slaveNs->PutMeta(string(rec.putMeta.key), rec.putMeta.value, dummyCtx_);
 			stat.updatedMeta++;
 			break;
 		// Update query
@@ -653,16 +644,15 @@ Error Replicator::applyWALRecord(LSNPair LSNs, string_view nsName, Namespace::Pt
 			QueryResults result;
 			Query q;
 			q.FromSQL(rec.data);
-			const auto nsCtx = NsContext(rdxContext);
 			switch (q.type_) {
 				case QueryDelete:
-					slaveNs->Delete(q, result, nsCtx);
+					slaveNs->Delete(q, result, rdxContext);
 					break;
 				case QueryUpdate:
-					slaveNs->Update(q, result, nsCtx);
+					slaveNs->Update(q, result, rdxContext);
 					break;
 				case QueryTruncate:
-					slaveNs->Truncate(nsCtx);
+					slaveNs->Truncate(rdxContext);
 					break;
 				default:
 					break;
@@ -719,7 +709,7 @@ Error Replicator::unpackItem(Item &item, lsn_t lsn, string_view cjson, const Tag
 			return Error(errNotValid, "Can't merge tagsmatcher of item with lsn ");
 		}
 	}
-	item.setLSN(int64_t(lsn));
+	item.setLSN(lsn);
 	return item.FromCJSON(cjson);
 }
 
@@ -730,22 +720,21 @@ Error Replicator::modifyItem(LSNPair LSNs, Namespace::Ptr slaveNs, string_view c
 
 	if (err.ok()) {
 		RdxContext rdxContext(true, LSNs);
-		auto nsCtx = NsContext(rdxContext);
 		switch (modifyMode) {
 			case ModeDelete:
-				slaveNs->Delete(item, nsCtx);
+				slaveNs->Delete(item, rdxContext);
 				stat.deleted++;
 				break;
 			case ModeInsert:
-				slaveNs->Insert(item, nsCtx);
+				slaveNs->Insert(item, rdxContext);
 				stat.updated++;
 				break;
 			case ModeUpsert:
-				slaveNs->Upsert(item, nsCtx);
+				slaveNs->Upsert(item, rdxContext);
 				stat.updated++;
 				break;
 			case ModeUpdate:
-				slaveNs->Update(item, nsCtx);
+				slaveNs->Update(item, rdxContext);
 				stat.updated++;
 				break;
 			default:
@@ -812,9 +801,9 @@ Error Replicator::syncMetaForced(Namespace::Ptr slaveNs, string_view nsName) {
 			continue;
 		}
 		try {
-			slaveNs->PutMeta(key, data, NsContext(dummyCtx_));
+			slaveNs->PutMeta(key, data, dummyCtx_);
 		} catch (const Error &e) {
-			logPrintf(LogError, "[repl:%s]:%d Error set meta '%s': %s", slaveNs->GetName(), config_.serverId, key, e.what());
+			logPrintf(LogError, "[repl:%s]:%d Error set meta '%s': %s", slaveNs->GetName(dummyCtx_), config_.serverId, key, e.what());
 		}
 	}
 	return errOK;

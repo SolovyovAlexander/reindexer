@@ -59,7 +59,6 @@ using BaseApi = ReindexerTestApi<reindexer::client::Reindexer>;
 
 class ServerControl {
 public:
-	const std::string kReplicationConfigFilename = "replication.conf";
 	const std::string kConfigNs = "#config";
 	const std::string kStoragePath = "/tmp/reindex_repl_test/";
 	const unsigned short kDefaultHttpPort = 5555;
@@ -73,11 +72,13 @@ public:
 	ServerControl& operator=(ServerControl& rhs) = delete;
 	ServerControl();
 	~ServerControl();
+	void Stop ();
 
 	struct Interface {
 		typedef std::shared_ptr<Interface> Ptr;
-		Interface(size_t id, std::atomic_bool& stopped, const std::string& ReplicationConfigFilename, const std::string& StoragePath,
-				  unsigned short httpPort, unsigned short rpcPort, const std::string& dbName, bool enableStats, size_t maxUpdatesSize = 0);
+		Interface(size_t id, std::atomic_bool& stopped, const std::string& StoragePath, unsigned short httpPort, unsigned short rpcPort,
+				  unsigned short clusterPort, const std::string& dbName, bool enableStats, size_t maxUpdatesSize = 0,
+				  unsigned short rpcClusterPort = 0);
 		~Interface();
 		// Stop server
 		void Stop();
@@ -92,13 +93,17 @@ public:
 		void ForceSync();
 		// get server config from file
 		ReplicationConfigTest GetServerConfig(ConfigType type);
-		// write server config to file
-		void WriteServerConfig(const std::string& configYaml);
+		// write replication config to file
+		void WriteReplicationConfig(const std::string& configYaml);
+		// write cluster config to file
+		void WriteClusterConfig(const std::string& configYaml);
 		// set server's WAL size
 		void SetWALSize(int64_t size, reindexer::string_view nsName);
 
 		reindexer_server::Server srv;
 		BaseApi api;
+
+		const std::string kClusterManagementDsn;
 
 	private:
 		void setReplicationConfig(size_t masterId, const ReplicationConfigTest& config);
@@ -107,17 +112,19 @@ public:
 		std::unique_ptr<std::thread> tr;
 		std::atomic_bool& stopped_;
 
-		const std::string kReplicationConfigFilename;
+		const std::string kReplicationConfigFilename = "replication.conf";
+		const std::string kClusterConfigFilename = "cluster.conf";
 		const std::string kConfigNs = "#config";
 		const std::string kStoragePath;
 		const unsigned short kRpcPort;
 		const unsigned short kHttpPort;
+		const unsigned short kClusterPort;
 		const std::string dbName_;
 	};
 	// Get server - wait means wait until server starts if no server
 	Interface::Ptr Get(bool wait = true);
-	void InitServer(size_t id, unsigned short rpcPort, unsigned short httpPort, const std::string& storagePath, const std::string& dbName,
-					bool enableStats, size_t maxUpdatesSize = 0);
+	void InitServer(size_t id, unsigned short rpcPort, unsigned short httpPort, unsigned short clusterPort, const std::string& storagePath,
+					const std::string& dbName, bool enableStats, size_t maxUpdatesSize = 0, unsigned short rpcClusterPort = 0);
 	void Drop();
 	bool IsRunning();
 

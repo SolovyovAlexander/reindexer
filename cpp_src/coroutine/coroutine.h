@@ -99,7 +99,17 @@ private:
 		/// @return true if stack size is fine
 		bool validate_stack() const noexcept;
 
+		/// Get pointer to coroutine's stack
+		/// @return pointer to the coroutine's stack bottom (or nullptr)
+		const char *stack_bottom() const noexcept { return stack_.size() ? stack_.data() : nullptr; }
+
+		/// Get coroutine's stack size
+		/// @return coroutine's stack size
+		size_t stack_size() const noexcept { return stack_size_; }
+
 		std::function<void()> func;
+
+		void *asan_fake_stack = nullptr;
 
 	private:
 		std::vector<char> stack_;

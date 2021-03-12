@@ -47,10 +47,20 @@ enum CmdCode : uint16_t {
 
 	kCmdSetSchema = 67,
 
+	kCmdGetReplState = 68,
+	kCmdCreateTmpNamespace = 69,
+	kCmdGetSnapshot = 70,
+	kCmdFetchSnapshot = 71,
+	kCmdApplySnapshotCh = 72,
+
 	kCmdSubscribeUpdates = 90,
 	kCmdUpdates = 91,
 
 	kCmdGetSQLSuggestions = 92,
+
+	kCmdSuggestLeader = 100,
+	kCmdLeadersPing = 101,
+	kCmdGetRaftInfo = 102,
 
 	kCmdCodeMax = 128
 };
@@ -59,6 +69,9 @@ string_view CmdName(uint16_t code);
 
 // Maximum number of active queries per client
 const uint32_t kMaxConcurentQueries = 256;
+
+// Maximum number of active snapshots per client
+const uint32_t kMaxConcurentSnapshots = 5;
 
 const uint32_t kCprotoMagic = 0xEEDD1132;
 const uint32_t kCprotoVersion = 0x103;

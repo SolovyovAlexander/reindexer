@@ -2,6 +2,7 @@
 #include <chrono>
 #include "client/item.h"
 #include "core/query/query.h"
+#include "tools/lsn.h"
 
 namespace reindexer {
 
@@ -18,13 +19,13 @@ class CoroRPCClient;
 
 class CoroTransaction {
 public:
-	Error Insert(Item&& item) { return addTxItem(std::move(item), ModeInsert); }
-	Error Update(Item&& item) { return addTxItem(std::move(item), ModeUpdate); }
-	Error Upsert(Item&& item) { return addTxItem(std::move(item), ModeUpsert); }
-	Error Delete(Item&& item) { return addTxItem(std::move(item), ModeDelete); }
-	Error Modify(Item&& item, ItemModifyMode mode) { return addTxItem(std::move(item), mode); }
+	Error Insert(Item&& item, lsn_t lsn = lsn_t()) { return addTxItem(std::move(item), ModeInsert, lsn); }
+	Error Update(Item&& item, lsn_t lsn = lsn_t()) { return addTxItem(std::move(item), ModeUpdate, lsn); }
+	Error Upsert(Item&& item, lsn_t lsn = lsn_t()) { return addTxItem(std::move(item), ModeUpsert, lsn); }
+	Error Delete(Item&& item, lsn_t lsn = lsn_t()) { return addTxItem(std::move(item), ModeDelete, lsn); }
+	Error Modify(Item&& item, ItemModifyMode mode, lsn_t lsn = lsn_t()) { return addTxItem(std::move(item), mode, lsn); }
 
-	Error Modify(Query&& query);
+	Error Modify(Query&& query, lsn_t lsn = lsn_t());
 	bool IsFree() const { return (conn_ == nullptr) || !status_.ok(); }
 	Item NewItem();
 	Error Status() const { return status_; }
@@ -32,17 +33,19 @@ public:
 private:
 	friend class RPCClient;
 	friend class CoroRPCClient;
+	friend class SyncCoroReindexerImpl;
+	friend class SyncCoroTransaction;
 	CoroTransaction(Error status) : status_(std::move(status)) {}
-	CoroTransaction(CoroRPCClient* rpcClient, net::cproto::CoroClientConnection* conn, int64_t txId, std::chrono::seconds RequestTimeout,
-					std::chrono::milliseconds execTimeout, std::string nsName)
+	CoroTransaction(CoroRPCClient* rpcClient, net::cproto::CoroClientConnection* conn, int64_t txId,
+					std::chrono::milliseconds RequestTimeout, std::chrono::milliseconds execTimeout, std::string nsName)
 		: txId_(txId),
 		  rpcClient_(rpcClient),
 		  conn_(conn),
-		  RequestTimeout_(RequestTimeout),
+		  requestTimeout_(RequestTimeout),
 		  execTimeout_(execTimeout),
 		  nsName_(std::move(nsName)) {}
 
-	Error addTxItem(Item&& item, ItemModifyMode mode);
+	Error addTxItem(Item&& item, ItemModifyMode mode, lsn_t lsn);
 	void clear() {
 		txId_ = -1;
 		rpcClient_ = nullptr;
@@ -53,7 +56,7 @@ private:
 	int64_t txId_ = -1;
 	CoroRPCClient* rpcClient_ = nullptr;
 	reindexer::net::cproto::CoroClientConnection* conn_ = nullptr;
-	std::chrono::seconds RequestTimeout_;
+	std::chrono::milliseconds requestTimeout_;
 	std::chrono::milliseconds execTimeout_;
 	std::string nsName_;
 	Error status_;

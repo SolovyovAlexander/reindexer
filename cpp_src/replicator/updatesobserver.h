@@ -2,7 +2,7 @@
 
 #include <mutex>
 #include <vector>
-#include "core/lsn.h"
+#include "tools/lsn.h"
 #include "estl/h_vector.h"
 #include "estl/shared_mutex.h"
 #include "estl/string_view.h"

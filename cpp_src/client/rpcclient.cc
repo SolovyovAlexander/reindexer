@@ -400,7 +400,8 @@ Error RPCClient::Delete(const Query& query, QueryResults& result, const Internal
 		}
 	};
 
-	auto ret = conn->Call(mkCommand(cproto::kCmdDeleteQuery, &ctx), ser.Slice(), kResultsWithItemID);
+	auto ret =
+		conn->Call(mkCommand(cproto::kCmdDeleteQuery, &ctx), ser.Slice(), kResultsWithItemID | kResultsWithPayloadTypes | kResultsCJson);
 	icompl(ret, conn);
 	return ret.Status();
 }

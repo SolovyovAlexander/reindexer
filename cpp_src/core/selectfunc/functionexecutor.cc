@@ -5,7 +5,8 @@
 
 namespace reindexer {
 
-FunctionExecutor::FunctionExecutor(NamespaceImpl& ns) : ns_(ns) {}
+FunctionExecutor::FunctionExecutor(NamespaceImpl& ns, h_vector<cluster::UpdateRecord, 1>& replUpdates)
+	: ns_(ns), replUpdates_(replUpdates) {}
 
 Variant FunctionExecutor::Execute(SelectFuncStruct& funcData) {
 	if (funcData.funcName == "now") {
@@ -15,7 +16,7 @@ Variant FunctionExecutor::Execute(SelectFuncStruct& funcData) {
 		}
 		return Variant(getTimeNow(mode));
 	} else if (funcData.funcName == "serial") {
-		return Variant(ns_.GetSerial(funcData.field));
+		return Variant(ns_.GetSerial(funcData.field, replUpdates_));
 	} else {
 		throw Error(errParams, "Unknown function %s", funcData.field);
 	}

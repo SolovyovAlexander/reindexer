@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/clustrerproxy.h"
 #include "core/namespacedef.h"
 #include "core/query/query.h"
 #include "core/queryresults/queryresults.h"
@@ -13,11 +14,19 @@ using std::vector;
 using std::string;
 using std::chrono::milliseconds;
 
-class ReindexerImpl;
+class ClusterProxy;
 class IUpdatesObserver;
 class IClientsStats;
 class ProtobufSchema;
 class UpdatesFilters;
+struct WALRecord;
+struct ReplicationStateV2;
+class SnapshotChunk;
+class Snapshot;
+namespace cluster {
+struct NodeData;
+struct RaftInfo;
+}  // namespace cluster
 
 /// The main Reindexer interface. Holds database object<br>
 /// *Thread safety*: All methods of Reindexer are thread safe. <br>
@@ -71,6 +80,13 @@ public:
 	/// Drop namespace. Will free all memory resorces, associated with namespace and erase all files from disk
 	/// @param nsName - Name of namespace
 	Error DropNamespace(string_view nsName);
+	/// Create new temporary namespace with randomized name
+	/// Temporary namespace will be automatically removed on next startup
+	/// @param baseName - base name, which will be used in result name
+	/// @param resultName - name of created namespace
+	/// @param opts - Storage options. Can be one of <br>
+	/// StorageOpts::Enabled() - Enable storage. If storage is disabled, then namespace will be completely in-memory<br>
+	Error CreateTemporaryNamespace(string_view baseName, std::string &resultName, const StorageOpts &opts = StorageOpts().Enabled());
 	/// Delete all items from namespace
 	/// @param nsName - Name of namespace
 	Error TruncateNamespace(string_view nsName);
@@ -205,6 +221,30 @@ public:
 	/// @param ser - schema output buffer
 	/// @param namespaces - list of namespaces to be embedded in .proto
 	Error GetProtobufSchema(WrSerializer &ser, vector<string> &namespaces);
+	/// Get namespace's replication state
+	/// @param nsName - Name of namespace
+	/// @param state - result state
+	Error GetReplState(string_view nsName, ReplicationStateV2 &state);
+	/// Get namespace snapshot
+	/// @param nsName - Name of namespace
+	/// @param from - LSN value. Starting point for snapshot. If this LSN is still available, snapshot will contain only diff (wal records)
+	/// @param snapshot - Result snapshot
+	Error GetSnapshot(string_view nsName, lsn_t from, Snapshot &snapshot);
+	/// Apply record from snapshot chunk
+	/// @param nsName - Name of namespace
+	/// @param ch - Snapshot chunk to apply
+	Error ApplySnapshotChunk(string_view nsName, const SnapshotChunk &ch);
+
+	/// Suggest new leader info to cluster node
+	/// @param suggestion - suggested elections data
+	/// @param response - local elections data
+	Error SuggestLeader(const cluster::NodeData &suggestion, cluster::NodeData &response);
+	/// Ping RAFT node, to notify it about cluster leader status
+	/// @param data - elections data
+	Error LeadersPing(const cluster::NodeData &data);
+	/// Get RAFT information about rx node
+	/// @param info - result RAFT info (out param)
+	Error GetRaftInfo(cluster::RaftInfo &info);
 
 	/// Add cancelable context
 	/// @param ctx - context pointer
@@ -212,6 +252,12 @@ public:
 	/// Add execution timeout to the next query
 	/// @param timeout - Execution timeout
 	Reindexer WithTimeout(milliseconds timeout) const { return Reindexer(impl_, ctx_.WithTimeout(timeout)); }
+	/// Add lsn info
+	/// @param lsn - next operation lsn
+	Reindexer WithLSN(lsn_t lsn) { return Reindexer(impl_, ctx_.WithLSN(lsn)); }
+	/// Add emmiter server id
+	/// @param id - emmiter server id
+	Reindexer WithServerId(unsigned int id) { return Reindexer(impl_, ctx_.WithServerId(id)); }
 	/// Add completion
 	/// @param cmpl - Optional async completion routine. If nullptr function will work syncronius
 	Reindexer WithCompletion(Completion cmpl) const { return Reindexer(impl_, ctx_.WithCompletion(cmpl)); }
@@ -240,9 +286,9 @@ public:
 	typedef Item ItemT;
 
 private:
-	Reindexer(ReindexerImpl *impl, InternalRdxContext &&ctx) : impl_(impl), owner_(false), ctx_(std::move(ctx)) {}
+	Reindexer(ClusterProxy *impl, InternalRdxContext &&ctx) : impl_(impl), owner_(false), ctx_(std::move(ctx)) {}
 
-	ReindexerImpl *impl_;
+	ClusterProxy *impl_;
 	bool owner_;
 	InternalRdxContext ctx_;
 };

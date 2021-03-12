@@ -15,12 +15,15 @@ namespace net {
 
 static std::atomic_uint_fast64_t counter_;
 
-Listener::Listener(ev::dynamic_loop &loop, std::shared_ptr<Shared> shared) : loop_(loop), shared_(shared), id_(counter_++) {
-	io_.set<Listener, &Listener::io_accept>(this);
-	io_.set(loop);
-	timer_.set<Listener, &Listener::timeout_cb>(this);
-	timer_.set(loop);
-	timer_.start(5., 5.);
+Listener::Listener(ev::dynamic_loop &loop, std::shared_ptr<Shared> shared, bool cloned)
+	: loop_(loop), shared_(shared), id_(counter_++), cloned_(cloned) {
+	if (cloned) {
+		io_.set<Listener, &Listener::io_accept>(this);
+		io_.set(loop);
+		timer_.set<Listener, &Listener::timeout_cb>(this);
+		timer_.set(loop);
+		timer_.start(5., 5.);
+	}
 	async_.set<Listener, &Listener::async_cb>(this);
 	async_.set(loop);
 	async_.start();
@@ -29,7 +32,7 @@ Listener::Listener(ev::dynamic_loop &loop, std::shared_ptr<Shared> shared) : loo
 }
 
 Listener::Listener(ev::dynamic_loop &loop, ConnectionFactory connFactory, int maxListeners)
-	: Listener(loop, std::make_shared<Shared>(connFactory, maxListeners ? maxListeners : std::thread::hardware_concurrency())) {}
+	: Listener(loop, std::make_shared<Shared>(connFactory, maxListeners ? maxListeners : std::thread::hardware_concurrency()), false) {}
 
 Listener::~Listener() { io_.stop(); }
 
@@ -49,7 +52,10 @@ bool Listener::Bind(string addr) {
 		return false;
 	}
 
-	io_.start(shared_->sock_.fd(), ev::READ);
+	// io_.start(shared_->sock_.fd(), ev::READ);
+	shared_->count_++;
+	std::thread th(&Listener::clone, shared_);
+	th.detach();
 	reserveStack();
 	return true;
 }
@@ -80,6 +86,7 @@ void Listener::io_accept(ev::io & /*watcher*/, int revents) {
 		auto conn = std::unique_ptr<IServerConnection>(shared_->connFactory_(loop_, client.fd()));
 		lck.lock();
 		connections_.push_back(std::move(conn));
+		assert(cloned_);
 	}
 	rebalance();
 
@@ -92,13 +99,13 @@ void Listener::io_accept(ev::io & /*watcher*/, int revents) {
 
 void Listener::timeout_cb(ev::periodic &, int) {
 	std::unique_lock<std::mutex> lck(shared_->lck_);
-	bool enableReuseIdle = !std::getenv("REINDEXER_NOREUSEIDLE");
+	bool enableReuseIdle = false;  //! std::getenv("REINDEXER_NOREUSEIDLE");
 
 	// Move finished connections to idle connections pool
 	for (unsigned i = 0; i < connections_.size();) {
 		if (connections_[i]->IsFinished()) {
 			connections_[i]->Detach();
-			if (enableReuseIdle) {
+			if (enableReuseIdle) {	// -V547
 				shared_->idle_.push_back(std::move(connections_[i]));
 			} else {
 				connections_[i].reset();
@@ -126,7 +133,8 @@ void Listener::timeout_cb(ev::periodic &, int) {
 }
 
 void Listener::rebalance() {
-	if (!std::getenv("REINDEXER_NOREBALANCE")) {
+	const bool enableRebalance = false;	 //! std::getenv("REINDEXER_NOREBALANCE");
+	if (enableRebalance) {
 		// Try to rebalance
 		for (;;) {
 			int curConnCount = connections_.size();
@@ -182,7 +190,7 @@ void Listener::clone(std::shared_ptr<Shared> shared) {
 	std::unique_lock<std::mutex> lck(shared->lck_, std::defer_lock);
 	{
 		ev::dynamic_loop loop;
-		Listener listener(loop, shared);
+		Listener listener(loop, shared, true);
 #if REINDEX_WITH_GPERFTOOLS
 		if (alloc_ext::TCMallocIsAvailable()) {
 			reindexer_server::pprof::ProfilerRegisterThread();

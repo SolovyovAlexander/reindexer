@@ -3,10 +3,19 @@
 #include <chrono>
 #include <thread>
 
+#ifdef REINDEX_WITH_ASAN
+#include <sanitizer/common_interface_defs.h>
+#endif	// REINDEX_WITH_ASAN
+
 namespace reindexer {
 namespace coroutine {
 
-static void static_entry(transfer_t from) { ordinator::instance().entry(from); }
+static void static_entry(transfer_t from) {
+#ifdef REINDEX_WITH_ASAN
+	__sanitizer_finish_switch_fiber(nullptr, nullptr, nullptr);
+#endif	// REINDEX_WITH_ASAN
+	ordinator::instance().entry(from);
+}
 
 ordinator &ordinator::instance() noexcept {
 	static thread_local ordinator ord;
@@ -49,8 +58,20 @@ int ordinator::resume(routine_t id) {
 			owner = &routines_[current_ - 1];
 		}
 		current_ = id;
+
+#ifdef REINDEX_WITH_ASAN
+		void *fake_stack = nullptr;
+		__sanitizer_start_switch_fiber(&fake_stack, routine.stack_bottom(), routine.stack_size());
+#endif	// REINDEX_WITH_ASAN
+
 		from = jump_fcontext(routine.ctx_, owner);	// Switch context
 													// It's unsafe to use routine reference after jump
+
+#ifdef REINDEX_WITH_ASAN
+		if (current_ != 0) {
+			__sanitizer_finish_switch_fiber(nullptr, nullptr, nullptr);
+		}
+#endif	// REINDEX_WITH_ASAN
 	}
 	if (from.data) {
 		// If execution thread was returned from active coroutine
@@ -226,7 +247,23 @@ transfer_t ordinator::jump_to_parent(void *from_rt) noexcept {
 	if (current_ > 0) {
 		owner = &routines_[current_ - 1];
 	}
-	return jump_fcontext(owner->ctx_, from_rt);
+
+#ifdef REINDEX_WITH_ASAN
+	void *fake_stack = nullptr;
+	if (current_ > 0) {
+		__sanitizer_start_switch_fiber(&fake_stack, routines_[current_ - 1].stack_bottom(), routines_[current_ - 1].stack_size());
+	}
+#endif	// REINDEX_WITH_ASAN
+
+	if (from_rt) {
+		auto transfer = jump_fcontext(owner->ctx_, from_rt);
+#ifdef REINDEX_WITH_ASAN
+		__sanitizer_finish_switch_fiber(nullptr, nullptr, nullptr);
+#endif	// REINDEX_WITH_ASAN
+		return transfer;
+	}
+
+	return jump_fcontext(owner->ctx_, nullptr);
 }
 
 }  // namespace coroutine

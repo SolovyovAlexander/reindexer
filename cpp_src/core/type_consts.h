@@ -119,6 +119,9 @@ enum ErrorCode {
 	errParseMsgPack = 24,
 	errParseProtobuf = 25,
 	errUpdatesLost = 26,
+	errWrongReplicationData = 27,
+	errUpdateReplication = 28,
+	errClusterConsensus = 29
 };
 
 enum SchemaType { JsonSchemaType, ProtobufSchemaType };
@@ -193,6 +196,8 @@ enum FieldModifyMode {
 	FieldModeSet = 0,
 	FieldModeDrop = 1,
 	FieldModeSetJson = 2,
+	FieldModeArrayPushBack = 3,
+	FieldModeArrayPushFront = 4,
 };
 
 enum ItemModifyMode { ModeUpdate = 0, ModeInsert = 1, ModeUpsert = 2, ModeDelete = 3 };

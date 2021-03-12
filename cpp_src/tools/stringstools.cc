@@ -229,11 +229,6 @@ void split(string_view utf8Str, wstring &utf16str, vector<std::wstring> &words, 
 	}
 }
 
-string lower(string s) {
-	transform(s.begin(), s.end(), s.begin(), [](char c) { return 'A' <= c && c <= 'Z' ? c ^ 32 : c; });
-	return s;
-}
-
 bool iequals(string_view lhs, string_view rhs) {
 	if (lhs.size() != rhs.size()) return false;
 	for (auto itl = lhs.begin(), itr = rhs.begin(); itl != lhs.end() && itr != rhs.end();) {

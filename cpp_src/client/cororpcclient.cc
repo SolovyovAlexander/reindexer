@@ -2,6 +2,9 @@
 #include <stdio.h>
 #include <functional>
 #include "client/itemimpl.h"
+#include "client/snapshot.h"
+#include "core/namespace/namespacestat.h"
+#include "core/namespace/snapshot/snapshot.h"
 #include "core/namespacedef.h"
 #include "gason/gason.h"
 #include "tools/errors.h"
@@ -19,7 +22,7 @@ using reindexer::net::cproto::CoroRPCAnswer;
 constexpr auto kSubscriptionCheckInterval = std::chrono::seconds(5);
 constexpr auto kCoroSleepGranularity = std::chrono::milliseconds(150);
 
-CoroRPCClient::CoroRPCClient(const ReindexerConfig& config) : config_(config) {
+CoroRPCClient::CoroRPCClient(const CoroReindexerConfig& config) : config_(config) {
 	if (config_.ConnectTimeout > config_.RequestTimeout) {
 		config_.RequestTimeout = config_.ConnectTimeout;
 	}
@@ -82,6 +85,24 @@ Error CoroRPCClient::DropNamespace(string_view nsName, const InternalRdxContext&
 	return conn_.Call(mkCommand(cproto::kCmdDropNamespace, &ctx), nsName).Status();
 }
 
+Error CoroRPCClient::CreateTemporaryNamespace(string_view baseName, std::string& resultName, const InternalRdxContext& ctx,
+											  const StorageOpts& opts) {
+	try {
+		NamespaceDef nsDef(std::string(baseName), opts);
+		WrSerializer ser;
+		nsDef.GetJSON(ser);
+		auto ans = conn_.Call(mkCommand(cproto::kCmdCreateTmpNamespace, &ctx), ser.Slice());
+
+		if (ans.Status().ok()) {
+			resultName = ans.GetArgs(1)[0].As<std::string>();
+			namespaces_.emplace(nsDef.name, Namespace::Ptr(new Namespace(resultName)));
+		}
+		return ans.Status();
+	} catch (const Error& err) {
+		return err;
+	}
+}
+
 Error CoroRPCClient::TruncateNamespace(string_view nsName, const InternalRdxContext& ctx) {
 	return conn_.Call(mkCommand(cproto::kCmdTruncateNamespace, &ctx), nsName).Status();
 }
@@ -124,7 +145,7 @@ Error CoroRPCClient::Delete(string_view nsName, Item& item, const InternalRdxCon
 	return modifyItem(nsName, item, ModeDelete, config_.RequestTimeout, ctx);
 }
 
-Error CoroRPCClient::modifyItem(string_view nsName, Item& item, int mode, seconds netTimeout, const InternalRdxContext& ctx) {
+Error CoroRPCClient::modifyItem(string_view nsName, Item& item, int mode, milliseconds netTimeout, const InternalRdxContext& ctx) {
 	WrSerializer ser;
 	if (item.impl_->GetPrecepts().size()) {
 		ser.PutVarUint(item.impl_->GetPrecepts().size());
@@ -150,7 +171,7 @@ Error CoroRPCClient::modifyItem(string_view nsName, Item& item, int mode, second
 		} else {
 			if (ret.Status().code() != errStateInvalidated || tryCount > 2) return ret.Status();
 			if (withNetTimeout) {
-				netTimeout = netDeadline - conn_.Now();
+				netTimeout = std::chrono::duration_cast<std::chrono::milliseconds>(netDeadline - conn_.Now());
 			}
 			CoroQueryResults qr;
 			InternalRdxContext ctxCompl = ctx.WithCompletion(nullptr);
@@ -159,7 +180,7 @@ Error CoroRPCClient::modifyItem(string_view nsName, Item& item, int mode, second
 				return Error(errTimeout, "Request timeout");
 			}
 			if (withNetTimeout) {
-				netTimeout = netDeadline - conn_.Now();
+				netTimeout = std::chrono::duration_cast<std::chrono::milliseconds>(netDeadline - conn_.Now());
 			}
 			auto newItem = NewItem(nsName);
 			char* endp = nullptr;
@@ -242,7 +263,8 @@ Error CoroRPCClient::Delete(const Query& query, CoroQueryResults& result, const 
 
 	result = CoroQueryResults(&conn_, std::move(nsArray), 0, config_.FetchAmount, config_.RequestTimeout);
 
-	auto ret = conn_.Call(mkCommand(cproto::kCmdDeleteQuery, &ctx), ser.Slice(), kResultsWithItemID);
+	auto ret =
+		conn_.Call(mkCommand(cproto::kCmdDeleteQuery, &ctx), ser.Slice(), kResultsWithItemID | kResultsWithPayloadTypes | kResultsCJson);
 	try {
 		if (ret.Status().ok()) {
 			auto args = ret.GetArgs(2);
@@ -284,7 +306,7 @@ void vec2pack(const h_vector<int32_t, 4>& vec, WrSerializer& ser) {
 	return;
 }
 
-Error CoroRPCClient::selectImpl(string_view query, CoroQueryResults& result, seconds netTimeout, const InternalRdxContext& ctx) {
+Error CoroRPCClient::selectImpl(string_view query, CoroQueryResults& result, milliseconds netTimeout, const InternalRdxContext& ctx) {
 	int flags = result.fetchFlags_ ? (result.fetchFlags_ & ~kResultsFormatMask) | kResultsJson : kResultsJson;
 
 	WrSerializer pser;
@@ -305,7 +327,7 @@ Error CoroRPCClient::selectImpl(string_view query, CoroQueryResults& result, sec
 	return ret.Status();
 }
 
-Error CoroRPCClient::selectImpl(const Query& query, CoroQueryResults& result, seconds netTimeout, const InternalRdxContext& ctx) {
+Error CoroRPCClient::selectImpl(const Query& query, CoroQueryResults& result, milliseconds netTimeout, const InternalRdxContext& ctx) {
 	WrSerializer qser, pser;
 	int flags = result.fetchFlags_ ? result.fetchFlags_ : (kResultsWithPayloadTypes | kResultsCJson);
 	bool hasJoins = !query.joinQueries_.empty();
@@ -434,6 +456,9 @@ Error CoroRPCClient::GetSqlSuggestions(string_view query, int pos, std::vector<s
 }
 
 Error CoroRPCClient::Status(const InternalRdxContext& ctx) {
+	if (!conn_.IsRunning()) {
+		return Error(errParams, "Client is not running");
+	}
 	return conn_.Status(config_.RequestTimeout, ctx.execTimeout(), ctx.getCancelCtx());
 }
 
@@ -451,12 +476,11 @@ cproto::CommandParams CoroRPCClient::mkCommand(cproto::CmdCode cmd, const Intern
 	return mkCommand(cmd, config_.RequestTimeout, ctx);
 }
 
-cproto::CommandParams CoroRPCClient::mkCommand(cproto::CmdCode cmd, std::chrono::seconds reqTimeout,
-											   const InternalRdxContext* ctx) noexcept {
+cproto::CommandParams CoroRPCClient::mkCommand(cproto::CmdCode cmd, milliseconds reqTimeout, const InternalRdxContext* ctx) noexcept {
 	if (ctx) {
-		return {cmd, reqTimeout, ctx->execTimeout(), ctx->getCancelCtx()};
+		return {cmd, reqTimeout, ctx->execTimeout(), ctx->lsn(), ctx->serverId(), ctx->getCancelCtx()};
 	}
-	return {cmd, reqTimeout, std::chrono::milliseconds(0), nullptr};
+	return {cmd, reqTimeout, std::chrono::milliseconds(0), lsn_t(), int(-1), nullptr};
 }
 
 void CoroRPCClient::onUpdates(const cproto::CoroRPCAnswer& ans) {
@@ -576,6 +600,77 @@ Error CoroRPCClient::RollBackTransaction(CoroTransaction& tr, const InternalRdxC
 		return ret;
 	}
 	return Error(errLogic, "connection is nullptr");
+}
+
+Error CoroRPCClient::GetReplState(string_view nsName, ReplicationStateV2& state, const InternalRdxContext& ctx) {
+	WrSerializer ser;
+	auto ret = conn_.Call(mkCommand(cproto::kCmdGetReplState, &ctx), nsName);
+	if (ret.Status().ok()) {
+		try {
+			auto json = ret.GetArgs(1)[0].As<string>();
+			state.FromJSON(giftStr(json));
+		} catch (Error& err) {
+			return err;
+		}
+	}
+	return ret.Status();
+}
+
+Error CoroRPCClient::GetSnapshot(string_view nsName, lsn_t from, Snapshot& snapshot, const InternalRdxContext& ctx) {
+	auto ret = conn_.Call(mkCommand(cproto::kCmdGetSnapshot, &ctx), nsName, int64_t(from));
+	try {
+		if (ret.Status().ok()) {
+			auto args = ret.GetArgs(4);
+			snapshot = Snapshot(&conn_, int(args[0]), int64_t(args[1]), int64_t(args[2]), p_string(args[3]), config_.RequestTimeout);
+		}
+	} catch (const Error& err) {
+		return err;
+	}
+	return ret.Status();
+}
+
+Error CoroRPCClient::ApplySnapshotChunk(string_view nsName, const SnapshotChunk& ch, const InternalRdxContext& ctx) {
+	WrSerializer ser;
+	ch.Serilize(ser);
+	return conn_.Call(mkCommand(cproto::kCmdApplySnapshotCh, &ctx), nsName, ser.Slice()).Status();
+}
+
+Error CoroRPCClient::SuggestLeader(const NodeData& suggestion, NodeData& response, const InternalRdxContext& ctx) {
+	WrSerializer ser;
+	suggestion.GetJSON(ser);
+	auto ret = conn_.Call(mkCommand(cproto::kCmdSuggestLeader, &ctx), ser.Slice());
+	if (ret.Status().ok()) {
+		try {
+			gason::JsonParser parser;
+			auto json = ret.GetArgs(1)[0].As<string>();
+			auto root = parser.Parse(giftStr(json));
+			response.FromJSON(root);
+		} catch (Error& err) {
+			return err;
+		}
+	}
+	return ret.Status();
+}
+
+Error CoroRPCClient::LeadersPing(const CoroRPCClient::NodeData& leader, const InternalRdxContext& ctx) {
+	WrSerializer ser;
+	leader.GetJSON(ser);
+	return conn_.Call(mkCommand(cproto::kCmdLeadersPing, &ctx), ser.Slice()).Status();
+}
+
+Error CoroRPCClient::GetRaftInfo(RaftInfo& info, const InternalRdxContext& ctx) {
+	auto ret = conn_.Call(mkCommand(cproto::kCmdGetRaftInfo, &ctx));
+	if (ret.Status().ok()) {
+		try {
+			gason::JsonParser parser;
+			auto json = ret.GetArgs(1)[0].As<string>();
+			auto root = parser.Parse(giftStr(json));
+			info.FromJSON(root);
+		} catch (Error& err) {
+			return err;
+		}
+	}
+	return ret.Status();
 }
 
 }  // namespace client

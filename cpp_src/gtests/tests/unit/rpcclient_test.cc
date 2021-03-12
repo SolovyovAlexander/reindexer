@@ -7,6 +7,9 @@
 #include "core/cjson/jsonbuilder.h"
 #include "coroutine/waitgroup.h"
 #include "net/ev/ev.h"
+#include "reindexertestapi.h"
+
+#include "core/namespace/snapshot/snapshot.h"
 
 using std::chrono::seconds;
 
@@ -291,7 +294,7 @@ TEST_F(RPCClientTestApi, CoroRequestTimeout) {
 	ev::dynamic_loop loop;
 	bool finished = false;
 	loop.spawn([&loop, &finished] {
-		reindexer::client::ReindexerConfig config;
+		reindexer::client::CoroReindexerConfig config;
 		config.RequestTimeout = seconds(1);
 		reindexer::client::CoroReindexer rx(config);
 		auto err = rx.Connect(string("cproto://") + kDefaultRPCServerAddr + "/test_db", loop);
@@ -355,7 +358,7 @@ TEST_F(RPCClientTestApi, CoroSuccessfullRequestWithTimeout) {
 	ev::dynamic_loop loop;
 	bool finished = false;
 	loop.spawn([&loop, &finished] {
-		reindexer::client::ReindexerConfig config;
+		reindexer::client::CoroReindexerConfig config;
 		config.ConnectTimeout = seconds(3);
 		config.RequestTimeout = seconds(6);
 		reindexer::client::CoroReindexer rx(config);
@@ -391,7 +394,7 @@ TEST_F(RPCClientTestApi, CoroErrorLoginResponse) {
 
 TEST_F(RPCClientTestApi, CoroStatus) {
 	// Should return correct Status, based on server's state
-	std::string dbPath = string(kDbPrefix) + "/" + kDefaultRPCPort;
+	std::string dbPath = std::string(kDbPrefix) + "/" + std::to_string(kDefaultRPCPort);
 	reindexer::fs::RmDirAll(dbPath);
 	AddRealServer(dbPath);
 	ev::dynamic_loop loop;

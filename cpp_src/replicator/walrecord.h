@@ -30,6 +30,9 @@ enum WALRecType {
 	WalForceSync = 14,
 	WalSetSchema = 15,
 	WalWALSync = 16,
+	WalTagsMatcher = 17,
+	WalResetLocalWal = 18,
+	WalRawItem = 19,
 };
 
 class WrSerializer;
@@ -54,6 +57,7 @@ struct WALRecord {
 	explicit WALRecord(string_view sv);
 	explicit WALRecord(WALRecType _type = WalEmpty, IdType _id = 0, bool inTx = false) : type(_type), id(_id), inTransaction(inTx) {}
 	explicit WALRecord(WALRecType _type, string_view _data, bool inTx = false) : type(_type), data(_data), inTransaction(inTx) {}
+	explicit WALRecord(WALRecType _type, IdType _id, string_view _data) : type(_type), rawItem{_id, _data} {}
 	explicit WALRecord(WALRecType _type, string_view key, string_view value) : type(_type), putMeta{key, value} {}
 	explicit WALRecord(WALRecType _type, string_view cjson, int tmVersion, int modifyMode, bool inTx = false)
 		: type(_type), itemModify{cjson, tmVersion, modifyMode}, inTransaction(inTx) {}
@@ -75,6 +79,10 @@ struct WALRecord {
 			string_view key;
 			string_view value;
 		} putMeta;
+		struct {
+			IdType id;
+			string_view itemCJson;
+		} rawItem;
 	};
 	bool inTransaction = false;
 	mutable SharedWALRecord shared_;
@@ -84,4 +92,16 @@ struct PackedWALRecord : public h_vector<uint8_t, 12> {
 	using h_vector<uint8_t, 12>::h_vector;
 	void Pack(const WALRecord &rec);
 };
+
+#pragma pack(push, 1)
+struct MarkedPackedWALRecord : public PackedWALRecord {
+	MarkedPackedWALRecord() = default;
+	template <typename RecordT>
+	MarkedPackedWALRecord(int16_t s, RecordT &&rec) : PackedWALRecord(std::forward<RecordT>(rec)), server(s) {}
+
+	int16_t server;
+	void Pack(int16_t _serverId, const WALRecord &rec);
+};
+#pragma pack(pop)
+
 }  // namespace reindexer

@@ -51,7 +51,7 @@ Item::FieldRef &Item::FieldRef::operator=(Variant kr) {
 	if (field_ >= 0) {
 		itemImpl_->SetField(field_, VariantArray{kr});
 	} else {
-		itemImpl_->SetField(jsonPath_, VariantArray{kr});
+		itemImpl_->SetField(jsonPath_, VariantArray{kr}, nullptr);
 	}
 
 	return *this;
@@ -130,8 +130,8 @@ Item &Item::Unsafe(bool enable) {
 	return *this;
 }
 
-int64_t Item::GetLSN() { return impl_->Value().GetLSN(); }
-void Item::setLSN(int64_t lsn) { impl_->Value().SetLSN(lsn); }
+lsn_t Item::GetLSN() { return impl_->Value().GetLSN(); }
+void Item::setLSN(lsn_t lsn) { impl_->Value().SetLSN(lsn); }
 
 template Item::FieldRef &Item::FieldRef::operator=(span<int> arr);
 template Item::FieldRef &Item::FieldRef::operator=(span<int64_t> arr);

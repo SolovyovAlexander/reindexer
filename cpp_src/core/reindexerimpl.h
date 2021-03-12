@@ -5,10 +5,12 @@
 #include <string>
 #include <thread>
 
+#include "cluster/config.h"
 #include "core/namespace/namespace.h"
 #include "core/nsselecter/nsselecter.h"
 #include "core/rdxcontext.h"
 #include "dbconfig.h"
+#include "estl/atomic_unique_ptr.h"
 #include "estl/fast_hash_map.h"
 #include "estl/h_vector.h"
 #include "estl/smart_lock.h"
@@ -26,6 +28,12 @@ namespace reindexer {
 class Replicator;
 class IClientsStats;
 class ProtobufSchema;
+namespace cluster {
+class NodeData;
+class Clusterizator;
+class DataReplicator;
+struct RaftInfo;
+}  // namespace cluster
 
 class ReindexerImpl {
 	using Mutex = MarkedMutex<shared_timed_mutex, MutexMark::Reindexer>;
@@ -51,6 +59,8 @@ public:
 	Error AddNamespace(const NamespaceDef &nsDef, const InternalRdxContext &ctx = InternalRdxContext());
 	Error CloseNamespace(string_view nsName, const InternalRdxContext &ctx = InternalRdxContext());
 	Error DropNamespace(string_view nsName, const InternalRdxContext &ctx = InternalRdxContext());
+	Error CreateTemporaryNamespace(string_view baseName, std::string &resultName, const StorageOpts &opts,
+								   const InternalRdxContext &ctx = InternalRdxContext());
 	Error TruncateNamespace(string_view nsName, const InternalRdxContext &ctx = InternalRdxContext());
 	Error RenameNamespace(string_view srcNsName, const std::string &dstNsName, const InternalRdxContext &ctx = InternalRdxContext());
 	Error AddIndex(string_view nsName, const IndexDef &index, const InternalRdxContext &ctx = InternalRdxContext());
@@ -83,7 +93,15 @@ public:
 	Error GetSqlSuggestions(const string_view sqlQuery, int pos, vector<string> &suggestions,
 							const InternalRdxContext &ctx = InternalRdxContext());
 	Error GetProtobufSchema(WrSerializer &ser, vector<string> &namespaces);
+	Error GetReplState(string_view nsName, ReplicationStateV2 &state, const InternalRdxContext &ctx = InternalRdxContext());
+	Error GetSnapshot(string_view nsName, lsn_t from, Snapshot &snapshot, const InternalRdxContext &ctx = InternalRdxContext());
+	Error ApplySnapshotChunk(string_view nsName, const SnapshotChunk &ch, const InternalRdxContext &ctx = InternalRdxContext());
 	Error Status();
+	Error SuggestLeader(const cluster::NodeData &suggestion, cluster::NodeData &response);
+	Error LeadersPing(const cluster::NodeData &);
+	Error GetRaftInfo(bool allowTransitState, cluster::RaftInfo &, const InternalRdxContext &ctx);
+
+	Error GetLeaderDsn(std::string &dsn, const InternalRdxContext &ctx = InternalRdxContext());
 
 	bool NeedTraceActivity() { return configProvider_.GetProfilingConfig().activityStats; }
 
@@ -172,6 +190,7 @@ protected:
 	std::vector<string> getNamespacesNames(const RdxContext &ctx);
 	Error renameNamespace(string_view srcNsName, const std::string &dstNsName, bool fromReplication = false,
 						  const InternalRdxContext &ctx = InternalRdxContext());
+	void readClusterConfigFile();
 
 	fast_hash_map<string, Namespace::Ptr, nocase_hash_str, nocase_equal_str> namespaces_;
 
@@ -184,7 +203,9 @@ protected:
 	QueriesStatTracer queriesStatTracker_;
 	UpdatesObservers observers_;
 	std::unique_ptr<Replicator> replicator_;
+	std::unique_ptr<cluster::Clusterizator> clusterizator_;
 	DBConfigProvider configProvider_;
+	atomic_unique_ptr<cluster::ClusterConfigData> clusterConfig_;
 	FileContetWatcher replConfigFileChecker_;
 	bool hasReplConfigLoadError_;
 
@@ -199,7 +220,9 @@ protected:
 	IClientsStats *clientsStats_ = nullptr;
 
 	friend class Replicator;
+	friend class cluster::DataReplicator;
 	friend class TransactionImpl;
+	friend class ClusterProxy;
 };
 
 }  // namespace reindexer

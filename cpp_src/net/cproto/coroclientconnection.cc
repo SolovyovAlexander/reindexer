@@ -16,7 +16,7 @@ constexpr size_t kMaxRecycledChuncks = 1500;
 constexpr size_t kMaxChunckSizeToRecycle = 2048;
 constexpr size_t kMaxParallelRPCCalls = 512;
 constexpr auto kCoroSleepGranularity = std::chrono::milliseconds(150);
-constexpr auto kDeadlineCheckInterval = std::chrono::seconds(1);
+constexpr auto kDeadlineCheckInterval = std::chrono::milliseconds(100);
 constexpr auto kKeepAliveInterval = std::chrono::seconds(30);
 constexpr size_t kUpdatesChannelSize = 128;
 constexpr size_t kReadBufReserveSize = 0x1000;
@@ -25,8 +25,7 @@ constexpr size_t kCntToSendNow = 30;
 constexpr size_t kDataToSendNow = 2048;
 
 CoroClientConnection::CoroClientConnection()
-	: now_(0),
-	  rpcCalls_(kMaxParallelRPCCalls),
+	: rpcCalls_(kMaxParallelRPCCalls),
 	  wrCh_(kWrChannelSize),
 	  seqNums_(kMaxParallelRPCCalls),
 	  updatesCh_(kUpdatesChannelSize),
@@ -107,11 +106,11 @@ void CoroClientConnection::Stop() {
 	}
 }
 
-Error CoroClientConnection::Status(std::chrono::seconds netTimeout, std::chrono::milliseconds execTimeout, const IRdxCancelContext *ctx) {
+Error CoroClientConnection::Status(milliseconds netTimeout, milliseconds execTimeout, const IRdxCancelContext *ctx) {
 	if (loggedIn_) {
 		return errOK;
 	}
-	return call({kCmdPing, netTimeout, execTimeout, ctx}, {}).Status();
+	return call({kCmdPing, netTimeout, execTimeout, lsn_t(), int(-1), ctx}, {}).Status();
 }
 
 CoroRPCAnswer CoroClientConnection::call(const CommandParams &opts, const Args &args) {
@@ -129,7 +128,7 @@ CoroRPCAnswer CoroClientConnection::call(const CommandParams &opts, const Args &
 		return Error(errLogic, "Client is not running");
 	}
 
-	auto deadline = opts.netTimeout.count() ? Now() + opts.netTimeout + kDeadlineCheckInterval : seconds(0);
+	auto deadline = opts.netTimeout.count() ? (Now() + opts.netTimeout + kDeadlineCheckInterval) : TimePointT();
 	auto seqp = seqNums_.pop();
 	if (!seqp.second) {
 		CoroRPCAnswer(Error(errLogic, "Unable to get seq num"));
@@ -146,7 +145,8 @@ CoroRPCAnswer CoroClientConnection::call(const CommandParams &opts, const Args &
 	call.cancelCtx = opts.cancelCtx;
 	CoroRPCAnswer ans;
 	try {
-		wrCh_.push(packRPC(opts.cmd, seq, args, Args{Arg{int64_t(opts.execTimeout.count())}}));
+		wrCh_.push(packRPC(opts.cmd, seq, args,
+						   Args{Arg{int64_t(opts.execTimeout.count())}, Arg{int64_t(opts.lsn)}, Arg{int64_t(opts.serverId)}}));
 		auto ansp = call.rspCh.pop();
 		if (ansp.second) {
 			ans = std::move(ansp.first);
@@ -224,7 +224,7 @@ Error CoroClientConnection::login(std::vector<char> &buf) {
 					 Arg{p_string(&connectData_.opts.appName)}};
 		constexpr uint32_t seq = 0;	 // login's seq num is always 0
 		assert(buf.size() == 0);
-		appendChunck(buf, packRPC(kCmdLogin, seq, args, Args{Arg{int64_t(0)}}).data);
+		appendChunck(buf, packRPC(kCmdLogin, seq, args, Args{Arg{int64_t(0)}, Arg{int64_t(lsn_t())}, Arg{int64_t(-1)}}).data);
 		int err = 0;
 		auto written = conn_.async_write(buf, err);
 		auto toWrite = buf.size();
@@ -423,14 +423,12 @@ void CoroClientConnection::readerRoutine() {
 
 void CoroClientConnection::deadlineRoutine() {
 	while (!terminate_) {
-		static_assert(std::chrono::duration_cast<std::chrono::seconds>(kDeadlineCheckInterval).count() >= 1,
-					  "kDeadlineCheckInterval shoul be 1 second or more");
 		loop_->granular_sleep(kDeadlineCheckInterval, kCoroSleepGranularity, terminate_);
-		now_ += std::chrono::duration_cast<std::chrono::seconds>(kDeadlineCheckInterval).count();
+		now_ += kDeadlineCheckInterval;
 
 		for (auto &c : rpcCalls_) {
 			if (!c.used) continue;
-			bool expired = (c.deadline.count() && c.deadline.count() <= now_);
+			bool expired = (c.deadline.time_since_epoch().count() && c.deadline <= now_);
 			bool canceled = (c.cancelCtx && c.cancelCtx->IsCancelable() && (c.cancelCtx->GetCancelType() == CancelType::Explicit));
 			if (expired || canceled) {
 				if (c.rspCh.opened()) {
@@ -445,7 +443,7 @@ void CoroClientConnection::pingerRoutine() {
 	while (!terminate_) {
 		loop_->granular_sleep(kKeepAliveInterval, kCoroSleepGranularity, terminate_);
 		if (conn_.state() != manual_connection::conn_state::init) {
-			call({kCmdPing, connectData_.opts.keepAliveTimeout, milliseconds(0), nullptr}, {});
+			call({kCmdPing, connectData_.opts.keepAliveTimeout, milliseconds(0), lsn_t(), -1, nullptr}, {});
 		}
 	}
 }

@@ -13,6 +13,7 @@ void ServerConfig::Reset() {
 	StorageEngine = "leveldb";
 	HTTPAddr = "0.0.0.0:9088";
 	RPCAddr = "0.0.0.0:6534";
+	ClusterAddr = "0.0.0.0:7645";
 	GRPCAddr = "0.0.0.0:16534";
 	LogLevel = "info";
 	ServerLog = "stdout";
@@ -97,6 +98,10 @@ Error ServerConfig::ParseCmd(int argc, char *argv[]) {
 	args::Group netGroup(parser, "Network options");
 	args::ValueFlag<string> httpAddrF(netGroup, "PORT", "http listen host:port", {'p', "httpaddr"}, HTTPAddr, args::Options::Single);
 	args::ValueFlag<string> rpcAddrF(netGroup, "RPORT", "RPC listen host:port", {'r', "rpcaddr"}, RPCAddr, args::Options::Single);
+	args::ValueFlag<string> rpcClusterAddrF(netGroup, "RCPORT", "RPC replication listen host:port", {"rpccluster"}, RPCClusterAddr,
+											args::Options::Single);
+	args::ValueFlag<string> clusterAddrF(netGroup, "CPORT", "Cluster management server listen host:port", {'m', "clusteraddr"}, ClusterAddr,
+										 args::Options::Single);
 #ifdef WITH_GRPC
 	args::ValueFlag<string> grpcAddrF(netGroup, "GPORT", "GRPC listen host:port", {'g', "grpcaddr"}, RPCAddr, args::Options::Single);
 	args::Flag grpcF(netGroup, "", "Enable gRpc service", {"grpc"});
@@ -156,7 +161,9 @@ Error ServerConfig::ParseCmd(int argc, char *argv[]) {
 	if (logLevelF) LogLevel = args::get(logLevelF);
 	if (httpAddrF) HTTPAddr = args::get(httpAddrF);
 	if (rpcAddrF) RPCAddr = args::get(rpcAddrF);
+	if (clusterAddrF) ClusterAddr = args::get(clusterAddrF);
 	if (webRootF) WebRoot = args::get(webRootF);
+	if (rpcClusterAddrF) RPCClusterAddr = args::get(rpcClusterAddrF);
 #ifndef _WIN32
 	if (userF) UserName = args::get(userF);
 	if (daemonizeF) Daemonize = args::get(daemonizeF);
@@ -200,6 +207,8 @@ reindexer::Error ServerConfig::fromYaml(Yaml::Node &root) {
 		RpcLog = root["logger"]["rpclog"].As<std::string>(RpcLog);
 		HTTPAddr = root["net"]["httpaddr"].As<std::string>(HTTPAddr);
 		RPCAddr = root["net"]["rpcaddr"].As<std::string>(RPCAddr);
+		ClusterAddr = root["net"]["clusteraddr"].As<std::string>(ClusterAddr);
+		RPCClusterAddr = root["net"]["rpcclusteraddr"].As<std::string>(RPCClusterAddr);
 		WebRoot = root["net"]["webroot"].As<std::string>(WebRoot);
 		MaxUpdatesSize = root["net"]["maxupdatessize"].As<size_t>(MaxUpdatesSize);
 		EnableSecurity = root["net"]["security"].As<bool>(EnableSecurity);

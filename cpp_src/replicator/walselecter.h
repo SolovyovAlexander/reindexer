@@ -9,7 +9,7 @@ struct SelectCtx;
 class WALSelecter {
 public:
 	WALSelecter(const NamespaceImpl *ns);
-	void operator()(QueryResults &result, SelectCtx &params);
+	void operator()(QueryResults &result, SelectCtx &params, bool snapshot = false);
 
 protected:
 	void putReplState(QueryResults &result);

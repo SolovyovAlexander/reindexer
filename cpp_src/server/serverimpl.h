@@ -19,6 +19,7 @@ using namespace reindexer::net;
 
 class HTTPServer;
 class RPCServer;
+class ClusterManagementServer;
 class DBManager;
 struct IDBManagerStatsCollector;
 struct IRPCServerStatsCollector;
@@ -54,7 +55,6 @@ private:
 	vector<string> args_;
 	ServerConfig config_;
 	LoggerWrapper logger_;
-	LoggerWrapper coreLogger_;
 	int coreLogLevel_;
 
 #ifndef _WIN32

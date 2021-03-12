@@ -19,6 +19,7 @@ func TestBuiltinServer(t *testing.T) {
 	cfg1 := config.DefaultServerConfig()
 	cfg1.Net.HTTPAddr = "0:29088"
 	cfg1.Net.RPCAddr = "0:26534"
+	cfg1.Net.ClusterAddr = "0:26634"
 	cfg1.Storage.Path = "/tmp/rx_builtinserver_test1"
 
 	os.RemoveAll(cfg1.Storage.Path)
@@ -29,6 +30,7 @@ func TestBuiltinServer(t *testing.T) {
 	cfg2 := config.DefaultServerConfig()
 	cfg2.Net.HTTPAddr = "0:29089"
 	cfg2.Net.RPCAddr = "0:26535"
+	cfg2.Net.ClusterAddr = "0:26635"
 	cfg2.Storage.Path = "/tmp/rx_builtinserver_test2"
 
 	os.RemoveAll(cfg2.Storage.Path)

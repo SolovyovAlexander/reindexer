@@ -14,14 +14,10 @@ using std::unique_ptr;
 using std::atomic;
 using std::thread;
 
-const std::string kDefaultRPCPort = "25673";							   // -V1043
-const std::string kDefaultRPCServerAddr = "127.0.0.1:" + kDefaultRPCPort;  // -V1043
-constexpr uint16_t kDefaultHttpPort = 33333;
-
 class RPCClientTestApi : public ::testing::Test {
 public:
 	RPCClientTestApi() {}
-	virtual ~RPCClientTestApi() { StopAllServers(); }
+	virtual ~RPCClientTestApi() {}
 
 protected:
 	class CancelRdxContext : public reindexer::IRdxCancelContext {
@@ -78,11 +74,12 @@ protected:
 	};
 
 	void SetUp() {}
-	void TearDown() {}
+	void TearDown() { StopAllServers(); }
 
 	void StartDefaultRealServer();
 	void AddFakeServer(const string& addr = kDefaultRPCServerAddr, const RPCServerConfig& conf = RPCServerConfig());
-	void AddRealServer(const std::string& dbPath, const string& addr = kDefaultRPCServerAddr, uint16_t httpPort = kDefaultHttpPort);
+	void AddRealServer(const std::string& dbPath, const string& addr = kDefaultRPCServerAddr, uint16_t httpPort = kDefaultHttpPort,
+					   uint16_t clusterPort = kDefaultClusterPort);
 	void StartServer(const string& addr = kDefaultRPCServerAddr, Error errOnLogin = Error());
 	void StopServer(const string& addr = kDefaultRPCServerAddr);
 	bool CheckIfFakeServerConnected(const string& addr = kDefaultRPCServerAddr);
@@ -94,7 +91,11 @@ protected:
 	void FillData(reindexer::client::Reindexer& rx, string_view nsName, int from, int count);
 	void FillData(reindexer::client::CoroReindexer& rx, string_view nsName, int from, int count);
 
-	const string_view kDbPrefix = "/tmp/reindex/rpc_client_test"_sv;
+	static const std::string kDbPrefix;
+	static const uint16_t kDefaultRPCPort = 25673;
+	static const std::string kDefaultRPCServerAddr;
+	static const uint16_t kDefaultHttpPort = 33333;
+	static const uint16_t kDefaultClusterPort = 33833;
 
 private:
 	struct ServerData {

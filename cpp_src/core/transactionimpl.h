@@ -7,11 +7,12 @@ namespace reindexer {
 
 class TransactionStep {
 public:
-	TransactionStep(Item &&item, ItemModifyMode modifyMode) : itemData_(move(*item.impl_)), modifyMode_(modifyMode), query_(nullptr) {
+	TransactionStep(Item &&item, ItemModifyMode modifyMode, lsn_t lsn)
+		: itemData_(move(*item.impl_)), modifyMode_(modifyMode), query_(nullptr), lsn_(lsn) {
 		delete item.impl_;
 		item.impl_ = nullptr;
 	}
-	TransactionStep(Query &&query) : modifyMode_(ModeUpdate), query_(new Query(std::move(query))) {}
+	TransactionStep(Query &&query, lsn_t lsn) : modifyMode_(ModeUpdate), query_(new Query(std::move(query))), lsn_(lsn) {}
 
 	TransactionStep(const TransactionStep &) = delete;
 	TransactionStep &operator=(const TransactionStep &) = delete;
@@ -21,25 +22,27 @@ public:
 	ItemImplRawData itemData_;
 	ItemModifyMode modifyMode_;
 	std::unique_ptr<Query> query_;
+	const lsn_t lsn_;
 };
 
 class TransactionImpl {
 public:
 	TransactionImpl(const std::string &nsName, const PayloadType &pt, const TagsMatcher &tm, const FieldsSet &pf,
-					std::shared_ptr<const Schema> schema);
+					std::shared_ptr<const Schema> schema, lsn_t lsn);
 
-	void Insert(Item &&item);
-	void Update(Item &&item);
-	void Upsert(Item &&item);
-	void Delete(Item &&item);
-	void Modify(Item &&item, ItemModifyMode mode);
-	void Modify(Query &&item);
+	void Insert(Item &&item, lsn_t lsn);
+	void Update(Item &&item, lsn_t lsn);
+	void Upsert(Item &&item, lsn_t lsn);
+	void Delete(Item &&item, lsn_t lsn);
+	void Modify(Item &&item, ItemModifyMode mode, lsn_t lsn);
+	void Modify(Query &&item, lsn_t lsn);
 
 	void UpdateTagsMatcherFromItem(ItemImpl *ritem);
 	Item NewItem();
 	Item GetItem(TransactionStep &&st);
+	lsn_t GetLSN() const noexcept { return lsn_; }
 
-	const std::string &GetName() { return nsName_; }
+	// const std::string &GetName() { return nsName_; }
 
 	void checkTagsMatcher(Item &item);
 
@@ -53,6 +56,7 @@ public:
 	bool tagsUpdated_;
 	std::mutex mtx_;
 	Transaction::time_point startTime_;
+	const lsn_t lsn_;
 };
 
 }  // namespace reindexer

@@ -374,7 +374,9 @@ func (db *reindexerImpl) deleteQuery(ctx context.Context, q *Query) (int, error)
 
 	ser := newSerializer(result.GetBuf())
 	// skip total count
-	rawQueryParams := ser.readRawQueryParams()
+	rawQueryParams := ser.readRawQueryParams(func(nsid int) {
+		ns.cjsonState.ReadPayloadType(&ser.Serializer)
+	})
 
 	for i := 0; i < rawQueryParams.count; i++ {
 		params := ser.readRawtItemParams()

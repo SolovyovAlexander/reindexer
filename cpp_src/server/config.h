@@ -29,6 +29,8 @@ struct ServerConfig {
 	string StorageEngine;
 	string HTTPAddr;
 	string RPCAddr;
+	string ClusterAddr;
+	string RPCClusterAddr;
 	string LogLevel;
 	string ServerLog;
 	string CoreLog;

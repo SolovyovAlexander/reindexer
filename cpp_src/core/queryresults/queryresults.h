@@ -60,7 +60,7 @@ public:
 		Item GetItem();
 		joins::ItemIterator GetJoined();
 		const ItemRef &GetItemRef() const { return qr_->items_[idx_]; }
-		int64_t GetLSN() const { return qr_->items_[idx_].Value().GetLSN(); }
+		lsn_t GetLSN() const { return qr_->items_[idx_].Value().GetLSN(); }
 		bool IsRaw() const;
 		string_view GetRaw() const;
 		Iterator &operator++();
@@ -88,7 +88,7 @@ public:
 
 	struct Context;
 	// precalc context size
-	static constexpr int kSizeofContext = 144;	// sizeof(void *) * 2 + sizeof(void *) * 3 + 32 + sizeof(void *) + sizeof(void *)*2;
+	static constexpr int kSizeofContext = 144;	 // sizeof(void *) * 2 + sizeof(void *) * 3 + 32 + sizeof(void *) + sizeof(void *)*2;
 
 	// Order of storing contexts for namespaces:
 	// [0]      - main NS context

@@ -3,7 +3,7 @@
 
 namespace reindexer {
 
-Reindexer::Reindexer(IClientsStats* clientsStats) : impl_(new ReindexerImpl(clientsStats)), owner_(true) {}
+Reindexer::Reindexer(IClientsStats* clientsStats) : impl_(new ClusterProxy(clientsStats)), owner_(true) {}
 Reindexer::~Reindexer() {
 	if (owner_) {
 		delete impl_;
@@ -23,6 +23,9 @@ Error Reindexer::EnableStorage(const string& storagePath, bool skipPlaceholderCh
 Error Reindexer::AddNamespace(const NamespaceDef& nsDef) { return impl_->AddNamespace(nsDef, ctx_); }
 Error Reindexer::OpenNamespace(string_view nsName, const StorageOpts& storage) { return impl_->OpenNamespace(nsName, storage, ctx_); }
 Error Reindexer::DropNamespace(string_view nsName) { return impl_->DropNamespace(nsName, ctx_); }
+Error Reindexer::CreateTemporaryNamespace(string_view baseName, std::string& resultName, const StorageOpts& opts) {
+	return impl_->CreateTemporaryNamespace(baseName, resultName, opts, ctx_);
+}
 Error Reindexer::CloseNamespace(string_view nsName) { return impl_->CloseNamespace(nsName, ctx_); }
 Error Reindexer::TruncateNamespace(string_view nsName) { return impl_->TruncateNamespace(nsName, ctx_); }
 Error Reindexer::RenameNamespace(string_view srcNsName, const std::string& dstNsName) {
@@ -55,6 +58,16 @@ Error Reindexer::SubscribeUpdates(IUpdatesObserver* observer, const UpdatesFilte
 	return impl_->SubscribeUpdates(observer, filters, opts);
 }
 Error Reindexer::GetProtobufSchema(WrSerializer& ser, vector<string>& namespaces) { return impl_->GetProtobufSchema(ser, namespaces); }
+Error Reindexer::GetReplState(string_view nsName, ReplicationStateV2& state) { return impl_->GetReplState(nsName, state, ctx_); }
+Error Reindexer::GetSnapshot(string_view nsName, lsn_t from, Snapshot& snapshot) {
+	return impl_->GetSnapshot(nsName, from, snapshot, ctx_);
+}
+Error Reindexer::ApplySnapshotChunk(string_view nsName, const SnapshotChunk& ch) { return impl_->ApplySnapshotChunk(nsName, ch, ctx_); }
+Error Reindexer::SuggestLeader(const cluster::NodeData& suggestion, cluster::NodeData& response) {
+	return impl_->SuggestLeader(suggestion, response);
+}
+Error Reindexer::LeadersPing(const cluster::NodeData& leader) { return impl_->LeadersPing(leader); }
+Error Reindexer::GetRaftInfo(cluster::RaftInfo& info) { return impl_->GetRaftInfo(info, ctx_); }
 Error Reindexer::UnsubscribeUpdates(IUpdatesObserver* observer) { return impl_->UnsubscribeUpdates(observer); }
 Error Reindexer::GetSqlSuggestions(const string_view sqlQuery, int pos, vector<string>& suggestions) {
 	return impl_->GetSqlSuggestions(sqlQuery, pos, suggestions, ctx_);

@@ -77,11 +77,12 @@ endif ()
 set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${EXTRA_FLAGS}")
 set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${EXTRA_FLAGS}")
 
-
 # Build project
 set(TARGET reindexer)
 
 set(REINDEXER_SOURCE_PATH ${PROJECT_SOURCE_DIR})
+set(REINDEXER_BINARY_PATH ${PROJECT_BINARY_DIR})
+
 
 file (
   GLOB_RECURSE 
@@ -95,6 +96,7 @@ file (
   ${REINDEXER_SOURCE_PATH}/net/*
   ${REINDEXER_SOURCE_PATH}/replicator/*
   ${REINDEXER_SOURCE_PATH}/coroutine/*
+  ${REINDEXER_SOURCE_PATH}/cluster/*
 )
 
 set (CONTEXT_ASM_DIR "${REINDEXER_SOURCE_PATH}/coroutine/context/asm")
@@ -614,7 +616,7 @@ if (NOT WIN32)
     "core/cbinding/reindexer_c.h" "core/cbinding/reindexer_ctypes.h" "core/transaction.h"
     "core/query/query.h" "core/query/queryentry.h" "core/queryresults/queryresults.h" "core/indexdef.h" "core/queryresults/aggregationresult.h"
     "core/queryresults/itemref.h"
-    "core/expressiontree.h" "core/lsn.h"
+    "core/expressiontree.h" "tools/lsn.h"
     "estl/h_vector.h" "estl/string_view.h" "estl/mutex.h" "estl/intrusive_ptr.h" "estl/trivial_reverse_iterator.h" "estl/span.h"
     "client/reindexer.h" "client/item.h" "client/reindexerconfig.h" "client/queryresults.h" "client/resultserializer.h"
     "client/internalrdxcontext.h" "client/transaction.h"

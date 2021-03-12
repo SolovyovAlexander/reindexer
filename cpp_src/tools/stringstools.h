@@ -101,6 +101,7 @@ string randStringAlph(size_t len);
 struct nocase_equal_str {
 	using is_transparent = void;
 
+	bool operator()(string_view lhs, string_view rhs) const { return iequals(lhs, rhs); }
 	bool operator()(string_view lhs, const string& rhs) const { return iequals(lhs, rhs); }
 	bool operator()(const string& lhs, string_view rhs) const { return iequals(lhs, rhs); }
 	bool operator()(const string& lhs, const string& rhs) const { return iequals(lhs, rhs); }

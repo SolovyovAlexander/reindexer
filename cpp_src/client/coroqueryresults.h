@@ -66,12 +66,14 @@ public:
 	TagsMatcher getTagsMatcher(int nsid) const;
 
 private:
+	friend class SyncCoroQueryResults;
+	friend class SyncCoroReindexerImpl;
 	friend class RPCClient;
 	friend class CoroRPCClient;
 	friend class RPCClientMock;
-	CoroQueryResults(net::cproto::CoroClientConnection* conn, NSArray&& nsArray, int fetchFlags, int fetchAmount, seconds timeout);
+	CoroQueryResults(net::cproto::CoroClientConnection* conn, NSArray&& nsArray, int fetchFlags, int fetchAmount, milliseconds timeout);
 	CoroQueryResults(net::cproto::CoroClientConnection* conn, NSArray&& nsArray, string_view rawResult, int queryID,
-				 int fetchFlags, int fetchAmount, seconds timeout);
+				 int fetchFlags, int fetchAmount, milliseconds timeout);
 	void Bind(string_view rawResult, int queryID);
 	void fetchNextResults();
 
@@ -83,7 +85,7 @@ private:
 	int fetchOffset_;
 	int fetchFlags_;
 	int fetchAmount_;
-	seconds requestTimeout_;
+	milliseconds requestTimeout_;
 
 	ResultSerializer::QueryParams queryParams_;
 	Error status_;

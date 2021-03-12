@@ -3,6 +3,8 @@
 #include <sstream>
 #include "core/cjson/jsonbuilder.h"
 #include "core/iclientsstats.h"
+#include "core/namespace/namespacestat.h"
+#include "core/namespace/snapshot/snapshot.h"
 #include "core/transactionimpl.h"
 #include "net/cproto/cproto.h"
 #include "net/cproto/serverconnection.h"
@@ -29,7 +31,7 @@ Error RPCServer::Ping(cproto::Context &) {
 	return 0;
 }
 
-static std::atomic<int> connCounter;
+static std::atomic<int> connCounter = {0};
 
 Error RPCServer::Login(cproto::Context &ctx, p_string login, p_string password, p_string db, cproto::optional<bool> createDBIfMissing,
 					   cproto::optional<bool> checkClusterID, cproto::optional<int> expectedClusterID,
@@ -228,6 +230,17 @@ Error RPCServer::RenameNamespace(cproto::Context &ctx, p_string srcNsName, p_str
 	return getDB(ctx, kRoleDBAdmin).RenameNamespace(srcNsName, dstNsName.toString());
 }
 
+Error RPCServer::CreateTemporaryNamespace(cproto::Context &ctx, p_string nsDefJson) {
+	NamespaceDef nsDef;
+	nsDef.FromJSON(giftStr(nsDefJson));
+	std::string resultName;
+	auto err = getDB(ctx, kRoleDataRead).CreateTemporaryNamespace(nsDef.name, resultName, nsDef.storage);
+	if (err.ok()) {
+		ctx.Return({cproto::Arg(p_string(&resultName))});
+	}
+	return err;
+}
+
 Error RPCServer::CloseNamespace(cproto::Context &ctx, p_string ns) {
 	// Do not close.
 	// TODO: add reference counters
@@ -343,7 +356,7 @@ Error RPCServer::AddTxItem(cproto::Context &ctx, int format, p_string itemData, 
 		}
 		item.SetPrecepts(precepts);
 	}
-	tr.Modify(std::move(item), ItemModifyMode(mode));
+	tr.Modify(std::move(item), ItemModifyMode(mode), ctx.call->lsn);
 
 	return err;
 }
@@ -356,7 +369,7 @@ Error RPCServer::DeleteQueryTx(cproto::Context &ctx, p_string queryBin, int64_t 
 	Serializer ser(queryBin.data(), queryBin.size());
 	query.Deserialize(ser);
 	query.type_ = QueryDelete;
-	tr.Modify(std::move(query));
+	tr.Modify(std::move(query), ctx.call->lsn);
 	return errOK;
 }
 
@@ -368,7 +381,7 @@ Error RPCServer::UpdateQueryTx(cproto::Context &ctx, p_string queryBin, int64_t 
 	Serializer ser(queryBin.data(), queryBin.size());
 	query.Deserialize(ser);
 	query.type_ = QueryUpdate;
-	tr.Modify(std::move(query));
+	tr.Modify(std::move(query), ctx.call->lsn);
 	return errOK;
 }
 
@@ -415,7 +428,7 @@ Error RPCServer::ModifyItem(cproto::Context &ctx, p_string ns, int format, p_str
 	using std::chrono::duration_cast;
 
 	auto db = getDB(ctx, kRoleDataWrite);
-	auto execTimeout = ctx.call->execTimeout_;
+	auto execTimeout = ctx.call->execTimeout;
 	auto beginT = steady_clock::now();
 	auto item = Item(db.NewItem(ns));
 	if (execTimeout.count() > 0) {
@@ -514,11 +527,11 @@ Error RPCServer::DeleteQuery(cproto::Context &ctx, p_string queryBin, cproto::op
 	if (!err.ok()) {
 		return err;
 	}
-	int flags = kResultsWithItemID;
-	if (flagsOpts.hasValue()) {
-		flags = flagsOpts.value();
-	}
-	ResultFetchOpts opts{flags, {}, 0, INT_MAX};
+
+	int32_t ptVersion = -1;
+	int flags = kResultsWithItemID | kResultsWithPayloadTypes | kResultsCJson;
+	if (flagsOpts.hasValue()) flags = flagsOpts.value();
+	ResultFetchOpts opts{flags, {&ptVersion, 1}, 0, INT_MAX};
 	return sendResults(ctx, qres, -1, opts);
 }
 
@@ -552,9 +565,12 @@ Reindexer RPCServer::getDB(cproto::Context &ctx, UserRole role) {
 				throw status;
 			}
 			if (db != nullptr) {
-				return db->NeedTraceActivity() ? db->WithTimeout(ctx.call->execTimeout_)
-													 .WithActivityTracer(ctx.clientAddr, clientData->auth.Login(), clientData->connID)
-											   : db->WithTimeout(ctx.call->execTimeout_);
+				return db->NeedTraceActivity()
+						   ? db->WithTimeout(ctx.call->execTimeout)
+								 .WithLSN(ctx.call->lsn)
+								 .WithServerId(ctx.call->serverId)
+								 .WithActivityTracer(ctx.clientAddr, clientData->auth.Login(), clientData->connID)
+						   : db->WithTimeout(ctx.call->execTimeout).WithLSN(ctx.call->lsn).WithServerId(ctx.call->serverId);
 			}
 		}
 	}
@@ -651,6 +667,7 @@ int64_t RPCServer::addTx(cproto::Context &ctx, string_view nsName) {
 	data->txs.emplace_back(std::move(tr));
 	return int64_t(data->txs.size() - 1);
 }
+
 void RPCServer::clearTx(cproto::Context &ctx, uint64_t txId) {
 	auto data = getClientDataSafe(ctx);
 	if (txId >= data->txs.size()) {
@@ -659,6 +676,61 @@ void RPCServer::clearTx(cproto::Context &ctx, uint64_t txId) {
 	assert(data->txStats);
 	data->txStats->txCount -= 1;
 	data->txs[txId] = Transaction();
+}
+
+Snapshot &RPCServer::getSnapshot(cproto::Context &ctx, int &id) {
+	auto data = getClientDataSafe(ctx);
+
+	if (id < 0) {
+		for (id = 0; id < int(data->snapshots.size()); id++) {
+			if (!data->snapshots[id].second) {
+				data->snapshots[id] = {Snapshot(), true};
+				return data->snapshots[id].first;
+			}
+		}
+
+		if (data->snapshots.size() > cproto::kMaxConcurentSnapshots) throw Error(errLogic, "Too many paralell snapshots");
+		id = data->snapshots.size();
+		data->snapshots.emplace_back(std::make_pair(Snapshot(), true));
+	}
+
+	if (id >= int(data->snapshots.size())) {
+		throw Error(errLogic, "Invalid snapshot id");
+	}
+	return data->snapshots[id].first;
+}
+
+Error RPCServer::fetchSnapshotRecords(cproto::Context &ctx, int id, int64_t offset, bool putHeader) {
+	cproto::Args args;
+	WrSerializer ser;
+	string_view resSlice;
+	Snapshot &snapshot = getSnapshot(ctx, id);
+	if (putHeader) {
+		args.emplace_back(int(id));
+		args.emplace_back(int64_t(snapshot.Size()));
+		args.emplace_back(int64_t(snapshot.RawDataSize()));
+	}
+	auto it = snapshot.begin() + offset;
+	if (it != snapshot.end()) {
+		auto ch = it.Chunk();
+		ch.Serilize(ser);
+		resSlice = ser.Slice();
+		args.emplace_back(p_string(&resSlice));
+	}
+	if (++it == snapshot.end()) {
+		freeSnapshot(ctx, id);
+	}
+	ctx.Return(std::move(args));
+
+	return errOK;
+}
+
+void RPCServer::freeSnapshot(cproto::Context &ctx, int id) {
+	auto data = getClientDataSafe(ctx);
+	if (id >= int(data->snapshots.size()) || id < 0) {
+		throw Error(errLogic, "Invalid snapshot id");
+	}
+	data->snapshots[id] = {Snapshot(), false};
 }
 
 void RPCServer::freeQueryResults(cproto::Context &ctx, int id) {
@@ -730,7 +802,9 @@ Error RPCServer::CloseResults(cproto::Context &ctx, int reqId) {
 
 Error RPCServer::fetchResults(cproto::Context &ctx, int reqId, const ResultFetchOpts &opts) {
 	QueryResults &qres = getQueryResults(ctx, reqId);
-
+	for (auto it = qres.begin(); it != qres.end(); ++it) {
+		auto item = it.GetItem();
+	}
 	return sendResults(ctx, qres, reqId, opts);
 }
 
@@ -745,6 +819,41 @@ Error RPCServer::GetSQLSuggestions(cproto::Context &ctx, p_string query, int pos
 		ctx.Return(ret);
 	}
 	return err;
+}
+
+Error RPCServer::GetReplState(cproto::Context &ctx, p_string ns) {
+	ReplicationStateV2 state;
+	auto err = getDB(ctx, kRoleDataRead).GetReplState(ns, state);
+	if (err.ok()) {
+		WrSerializer ser;
+		JsonBuilder json(ser);
+		state.GetJSON(json);
+		json.End();
+		auto slice = ser.Slice();
+		ctx.Return({cproto::Arg(p_string(&slice))});
+	}
+	return err;
+}
+
+Error RPCServer::GetSnapshot(cproto::Context &ctx, p_string ns, int64_t from) {
+	int id = -1;
+	Snapshot &snapshot = getSnapshot(ctx, id);
+	auto ret = getDB(ctx, kRoleDataRead).GetSnapshot(ns, lsn_t(from), snapshot);
+	if (!ret.ok()) {
+		freeSnapshot(ctx, id);
+		return ret;
+	}
+
+	return fetchSnapshotRecords(ctx, id, 0, true);
+}
+
+Error RPCServer::FetchSnapshot(cproto::Context &ctx, int id, int64_t offset) { return fetchSnapshotRecords(ctx, id, offset, false); }
+
+Error RPCServer::ApplySnapshotChunk(cproto::Context &ctx, p_string ns, p_string rec) {
+	SnapshotChunk ch;
+	Serializer ser(rec);
+	ch.Deserialize(ser);
+	return getDB(ctx, kRoleDataRead).ApplySnapshotChunk(ns, ch);
 }
 
 Error RPCServer::Commit(cproto::Context &ctx, p_string ns) { return getDB(ctx, kRoleDataWrite).Commit(ns); }
@@ -816,35 +925,34 @@ bool RPCServer::Start(const string &addr, ev::dynamic_loop &loop, bool enableSta
 	dispatcher_.Register(cproto::kCmdCloseNamespace, this, &RPCServer::CloseNamespace);
 	dispatcher_.Register(cproto::kCmdEnumNamespaces, this, &RPCServer::EnumNamespaces, true);
 	dispatcher_.Register(cproto::kCmdEnumDatabases, this, &RPCServer::EnumDatabases);
-
 	dispatcher_.Register(cproto::kCmdAddIndex, this, &RPCServer::AddIndex);
 	dispatcher_.Register(cproto::kCmdUpdateIndex, this, &RPCServer::UpdateIndex);
 	dispatcher_.Register(cproto::kCmdDropIndex, this, &RPCServer::DropIndex);
 	dispatcher_.Register(cproto::kCmdSetSchema, this, &RPCServer::SetSchema);
 	dispatcher_.Register(cproto::kCmdCommit, this, &RPCServer::Commit);
-
 	dispatcher_.Register(cproto::kCmdStartTransaction, this, &RPCServer::StartTransaction);
 	dispatcher_.Register(cproto::kCmdAddTxItem, this, &RPCServer::AddTxItem);
 	dispatcher_.Register(cproto::kCmdDeleteQueryTx, this, &RPCServer::DeleteQueryTx);
 	dispatcher_.Register(cproto::kCmdUpdateQueryTx, this, &RPCServer::UpdateQueryTx);
 	dispatcher_.Register(cproto::kCmdCommitTx, this, &RPCServer::CommitTx, true);
 	dispatcher_.Register(cproto::kCmdRollbackTx, this, &RPCServer::RollbackTx);
-
 	dispatcher_.Register(cproto::kCmdModifyItem, this, &RPCServer::ModifyItem);
 	dispatcher_.Register(cproto::kCmdDeleteQuery, this, &RPCServer::DeleteQuery, true);
 	dispatcher_.Register(cproto::kCmdUpdateQuery, this, &RPCServer::UpdateQuery, true);
-
 	dispatcher_.Register(cproto::kCmdSelect, this, &RPCServer::Select);
 	dispatcher_.Register(cproto::kCmdSelectSQL, this, &RPCServer::SelectSQL);
 	dispatcher_.Register(cproto::kCmdFetchResults, this, &RPCServer::FetchResults);
 	dispatcher_.Register(cproto::kCmdCloseResults, this, &RPCServer::CloseResults);
-
 	dispatcher_.Register(cproto::kCmdGetSQLSuggestions, this, &RPCServer::GetSQLSuggestions);
-
 	dispatcher_.Register(cproto::kCmdGetMeta, this, &RPCServer::GetMeta);
 	dispatcher_.Register(cproto::kCmdPutMeta, this, &RPCServer::PutMeta);
 	dispatcher_.Register(cproto::kCmdEnumMeta, this, &RPCServer::EnumMeta);
 	dispatcher_.Register(cproto::kCmdSubscribeUpdates, this, &RPCServer::SubscribeUpdates, true);
+	dispatcher_.Register(cproto::kCmdGetReplState, this, &RPCServer::GetReplState);
+	dispatcher_.Register(cproto::kCmdCreateTmpNamespace, this, &RPCServer::CreateTemporaryNamespace);
+	dispatcher_.Register(cproto::kCmdGetSnapshot, this, &RPCServer::GetSnapshot);
+	dispatcher_.Register(cproto::kCmdFetchSnapshot, this, &RPCServer::FetchSnapshot);
+	dispatcher_.Register(cproto::kCmdApplySnapshotCh, this, &RPCServer::ApplySnapshotChunk);
 	dispatcher_.Middleware(this, &RPCServer::CheckAuth);
 	dispatcher_.OnClose(this, &RPCServer::OnClose);
 	dispatcher_.OnResponse(this, &RPCServer::OnResponse);

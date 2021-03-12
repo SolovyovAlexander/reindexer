@@ -70,7 +70,7 @@ void WrResultSerializer::putItemParams(const QueryResults* result, int idx, bool
 
 	if (opts_.flags & kResultsWithItemID) {
 		PutVarUint(itemRef.Id());
-		PutVarUint(itemRef.Value().GetLSN());
+		PutVarUint(int64_t(itemRef.Value().GetLSN()));
 	}
 
 	if (opts_.flags & kResultsWithNsID) {

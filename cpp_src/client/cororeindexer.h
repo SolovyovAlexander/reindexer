@@ -1,10 +1,10 @@
 #pragma once
 
 #include "client/coroqueryresults.h"
+#include "client/cororeindexerconfig.h"
 #include "client/corotransaction.h"
 #include "client/internalrdxcontext.h"
 #include "client/item.h"
-#include "client/reindexerconfig.h"
 #include "core/namespacedef.h"
 #include "core/query/query.h"
 #include "net/ev/ev.h"
@@ -14,14 +14,13 @@
 namespace reindexer {
 class IUpdatesObserver;
 class UpdatesFilters;
+class SnapshotChunk;
+struct ReplicationStateV2;
 
 namespace client {
-using std::vector;
-using std::string;
-using std::chrono::milliseconds;
-using net::ev::dynamic_loop;
 
 class CoroRPCClient;
+class Snapshot;
 
 /// The main Reindexer interface. Holds database object<br>
 /// *Thread safety*: None of the methods are threadsafe <br>
@@ -30,11 +29,8 @@ class CoroRPCClient;
 /// semantics, and have independent lifetime<br>
 class CoroReindexer {
 public:
-	/// Completion routine
-	typedef std::function<void(const Error &err)> Completion;
-
 	/// Create Reindexer database object
-	CoroReindexer(const ReindexerConfig & = ReindexerConfig());
+	CoroReindexer(const CoroReindexerConfig & = CoroReindexerConfig());
 	/// Destrory Reindexer database object
 	~CoroReindexer();
 	CoroReindexer(const CoroReindexer &) = delete;
@@ -46,7 +42,7 @@ public:
 	/// @param dsn - uri of server and database, like: `cproto://user@password:127.0.0.1:6534/dbname`
 	/// @param loop - event loop for connections and coroutines handling
 	/// @param opts - Connect options. May contaion any of <br>
-	Error Connect(const string &dsn, dynamic_loop &loop, const client::ConnectOpts &opts = client::ConnectOpts());
+	Error Connect(const string &dsn, net::ev::dynamic_loop &loop, const client::ConnectOpts &opts = client::ConnectOpts());
 	/// Stop - shutdown connector
 	Error Stop();
 	/// Open or create namespace
@@ -65,6 +61,13 @@ public:
 	/// Drop namespace. Will free all memory resorces, associated with namespace and erase all files from disk
 	/// @param nsName - Name of namespace
 	Error DropNamespace(string_view nsName);
+	/// Create new temporary namespace with randomized name
+	/// Temporary namespace will be automatically removed on next startup
+	/// @param baseName - base name, which will be used in result name
+	/// @param resultName - name of created namespace
+	/// @param opts - Storage options. Can be one of <br>
+	/// StorageOpts::Enabled() - Enable storage. If storage is disabled, then namespace will be completely in-memory<br>
+	Error CreateTemporaryNamespace(string_view baseName, std::string &resultName, const StorageOpts &opts = StorageOpts().Enabled());
 	/// Delete all items in namespace
 	/// @param nsName - Name of namespace
 	Error TruncateNamespace(string_view nsName);
@@ -97,18 +100,15 @@ public:
 	Error EnumDatabases(vector<string> &dbList);
 	/// Insert new Item to namespace. If item with same PK is already exists, when item.GetID will
 	/// return -1, on success item.GetID() will return internal Item ID
-	/// May be used with completion
 	/// @param nsName - Name of namespace
 	/// @param item - Item, obtained by call to NewItem of the same namespace
 	Error Insert(string_view nsName, Item &item);
 	/// Update Item in namespace. If item with same PK is not exists, when item.GetID will
 	/// return -1, on success item.GetID() will return internal Item ID
-	/// May be used with completion
 	/// @param nsName - Name of namespace
 	/// @param item - Item, obtained by call to NewItem of the same namespace
 	Error Update(string_view nsName, Item &item);
 	/// Update or Insert Item in namespace. On success item.GetID() will return internal Item ID
-	/// May be used with completion
 	/// @param nsName - Name of namespace
 	/// @param item - Item, obtained by call to NewItem of the same namespace
 	Error Upsert(string_view nsName, Item &item);
@@ -117,7 +117,6 @@ public:
 	/// @param result - QueryResults with IDs of deleted items.
 	Error Update(const Query &query, CoroQueryResults &result);
 	/// Delete Item from namespace. On success item.GetID() will return internal Item ID
-	/// May be used with completion
 	/// @param nsName - Name of namespace
 	/// @param item - Item, obtained by call to NewItem of the same namespace
 	Error Delete(string_view nsName, Item &item);
@@ -126,12 +125,10 @@ public:
 	/// @param result - QueryResults with IDs of deleted items
 	Error Delete(const Query &query, CoroQueryResults &result);
 	/// Execute SQL Query and return results
-	/// May be used with completion
 	/// @param query - SQL query. Only "SELECT" semantic is supported
 	/// @param result - QueryResults with found items
 	Error Select(string_view query, CoroQueryResults &result);
 	/// Execute Query and return results
-	/// May be used with completion
 	/// @param query - Query object with query attributes
 	/// @param result - QueryResults with found items
 	Error Select(const Query &query, CoroQueryResults &result);
@@ -181,18 +178,33 @@ public:
 	/// RollBack transaction - transaction will be deleted after rollback
 	/// @param tr - transaction to rollback
 	Error RollBackTransaction(CoroTransaction &tr);
+	/// Get namespace's replication state
+	/// @param nsName - Name of namespace
+	/// @param state - result state
+	Error GetReplState(string_view nsName, ReplicationStateV2 &state);
+	/// Get namespace snapshot
+	/// @param nsName - Name of namespace
+	/// @param from - LSN value. Starting point for snapshot. If this LSN is still available, snapshot will contain only diff (wal records)
+	/// @param snapshot - Result snapshot
+	Error GetSnapshot(string_view nsName, lsn_t from, Snapshot &snapshot);
+	/// Apply record from snapshot chunk
+	/// @param nsName - Name of namespace
+	/// @param ch - Snapshot chunk to apply
+	Error ApplySnapshotChunk(string_view nsName, const SnapshotChunk &);
 
 	/// Add cancelable context
 	/// @param cancelCtx - context pointer
 	CoroReindexer WithContext(const IRdxCancelContext *cancelCtx) { return CoroReindexer(impl_, ctx_.WithCancelContext(cancelCtx)); }
-
 	/// Add execution timeout to the next query
 	/// @param timeout - Optional server-side execution timeout for each subquery
 	CoroReindexer WithTimeout(milliseconds timeout) { return CoroReindexer(impl_, ctx_.WithTimeout(timeout)); }
+	/// Add lsn info
+	/// @param lsn - next operation lsn
+	CoroReindexer WithLSN(lsn_t lsn) { return CoroReindexer(impl_, ctx_.WithLSN(lsn)); }
 
 	typedef CoroQueryResults QueryResultsT;
 	typedef Item ItemT;
-	typedef ReindexerConfig ConfigT;
+	typedef CoroReindexerConfig ConfigT;
 
 private:
 	CoroReindexer(CoroRPCClient *impl, InternalRdxContext &&ctx) : impl_(impl), owner_(false), ctx_(std::move(ctx)) {}

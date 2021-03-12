@@ -31,6 +31,7 @@ void WALRecord::Pack(WrSerializer &ser) const {
 		case WalForceSync:
 		case WalWALSync:
 		case WalSetSchema:
+		case WalTagsMatcher:
 			ser.PutVString(data);
 			break;
 		case WalPutMeta:
@@ -42,6 +43,10 @@ void WALRecord::Pack(WrSerializer &ser) const {
 			ser.PutVarUint(itemModify.modifyMode);
 			ser.PutVarUint(itemModify.tmVersion);
 			break;
+		case WalRawItem:
+			ser.PutUInt32(rawItem.id);
+			ser.PutVString(rawItem.itemCJson);
+			break;
 		case WalEmpty:
 			ser.Reset();
 			break;
@@ -49,6 +54,7 @@ void WALRecord::Pack(WrSerializer &ser) const {
 		case WalNamespaceDrop:
 		case WalInitTransaction:
 		case WalCommitTransaction:
+		case WalResetLocalWal:
 			break;
 		default:
 			fprintf(stderr, "Unexpected WAL rec type %d\n", int(type));
@@ -83,6 +89,7 @@ WALRecord::WALRecord(span<uint8_t> packed) {
 		case WalForceSync:
 		case WalWALSync:
 		case WalSetSchema:
+		case WalTagsMatcher:
 			data = ser.GetVString();
 			break;
 		case WalPutMeta:
@@ -94,11 +101,16 @@ WALRecord::WALRecord(span<uint8_t> packed) {
 			itemModify.modifyMode = ser.GetVarUint();
 			itemModify.tmVersion = ser.GetVarUint();
 			break;
+		case WalRawItem:
+			rawItem.id = ser.GetUInt32();
+			rawItem.itemCJson = ser.GetVString();
+			break;
 		case WalEmpty:
 		case WalNamespaceAdd:
 		case WalNamespaceDrop:
 		case WalInitTransaction:
 		case WalCommitTransaction:
+		case WalResetLocalWal:
 			break;
 		default:
 			logPrintf(LogWarning, "Unexpected WAL rec type %d\n", int(type));
@@ -175,10 +187,8 @@ WrSerializer &WALRecord::Dump(WrSerializer &ser, std::function<string(string_vie
 		case WalItemModify:
 			return ser << (itemModify.modifyMode == ModeDelete ? " Delete " : " Update ") << cjsonViewer(itemModify.itemCJson);
 		default:
-			fprintf(stderr, "Unexpected WAL rec type %d\n", int(type));
-			std::abort();
+			return ser << " <unhandled record of type " << int(type) << '>';
 	}
-	return ser;
 }
 
 void WALRecord::GetJSON(JsonBuilder &jb, std::function<string(string_view)> cjsonViewer) const {
@@ -258,6 +268,11 @@ SharedWALRecord::Unpacked SharedWALRecord::Unpack() {
 	p_string nsName = rdser.GetPVString();
 	p_string pwal = rdser.GetPSlice();
 	return {lsn, originLSN, nsName, pwal};
+}
+
+void MarkedPackedWALRecord::Pack(int16_t _server, const WALRecord &rec) {
+	server = _server;
+	PackedWALRecord::Pack(rec);
 }
 
 }  // namespace reindexer

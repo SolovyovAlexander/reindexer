@@ -65,7 +65,7 @@ Error RepairTool::repairNamespace(IDataStorage* storage, const std::string& stor
 			return Error(errParams, "Namespace name contains invalid character. Only alphas, digits,'_','-', are allowed");
 		}
 		reindexer::UpdatesObservers emptyObserversList;
-		reindexer::NamespaceImpl ns(name, emptyObserversList);
+		reindexer::NamespaceImpl ns(name, emptyObserversList, nullptr);
 		StorageOpts storageOpts;
 		reindexer::RdxContext dummyCtx;
 		std::cout << "Loading " << name << std::endl;

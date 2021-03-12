@@ -148,15 +148,23 @@ void ServerConnection::onRead() {
 
 				ser = Serializer(uncompressed);
 			}
-			ctx.call->execTimeout_ = milliseconds(0);
+			ctx.call->execTimeout = milliseconds(0);
+			ctx.call->lsn = lsn_t();
 
 			ctx.call->args.Unpack(ser);
+			ctx.call->serverId = -1;
 
 			if (!ser.Eof()) {
 				Args ctxArgs;
 				ctxArgs.Unpack(ser);
 				if (ctxArgs.size() > 0) {
-					ctx.call->execTimeout_ = milliseconds(int64_t(ctxArgs[0]));
+					ctx.call->execTimeout = milliseconds(int64_t(ctxArgs[0]));
+				}
+				if (ctxArgs.size() > 1) {
+					ctx.call->lsn = lsn_t(int64_t(ctxArgs[1]));
+				}
+				if (ctxArgs.size() > 2) {
+					ctx.call->serverId = int64_t(ctxArgs[2]);
 				}
 			}
 
@@ -301,7 +309,7 @@ void ServerConnection::sendUpdates() {
 	updatesSize = updatesSize_;
 	updatesSize_ = 0;
 	updates_mtx_.unlock();
-	RPCCall callUpdate{kCmdUpdates, 0, {}, milliseconds(0)};
+	RPCCall callUpdate{kCmdUpdates, 0, {}, milliseconds(0), lsn_t(), -1};
 	cproto::Context ctx{"", &callUpdate, this, {{}, {}}, false};
 	size_t len = 0;
 	Args args;

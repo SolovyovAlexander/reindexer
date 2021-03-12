@@ -236,6 +236,7 @@ Item QueryResults::Iterator::GetItem() {
 			}
 			case kResultsCJson: {
 				err = item.FromCJSON(itemParams_.data);
+				item.setID(itemParams_.id);
 				break;
 			}
 			case kResultsJson: {

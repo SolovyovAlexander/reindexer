@@ -51,8 +51,9 @@ public:
 		memcpy(data_ + len_, data.data(), data.size());
 		len_ += data.size();
 	}
-	size_t size() { return len_ - offset_; }
-	uint8_t *data() { return data_ + offset_; }
+	size_t size() const noexcept { return len_ - offset_; }
+	uint8_t *data() noexcept { return data_ + offset_; }
+	operator string_view() const noexcept { return string_view(reinterpret_cast<char *>(data_), size()); }
 
 	uint8_t *data_;
 	size_t len_;

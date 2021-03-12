@@ -1,9 +1,14 @@
 #include "server.h"
 
+#if REINDEX_WITH_LIBDL
+#include <dlfcn.h>
+#endif
+
 #include <vector>
 
 #include "args/args.hpp"
 #include "clientsstats.h"
+#include "clustermanagementserver.h"
 #include "dbmanager.h"
 #include "debug/allocdebug.h"
 #include "debug/backtrace.h"
@@ -30,8 +35,7 @@ void init_resources() {}
 #endif
 
 #ifdef WITH_GRPC
-#include <grpcpp/grpcpp.h>
-#include "reindexerservice.h"
+#include "grpc/grpcexport.h"
 #endif
 
 namespace reindexer_server {
@@ -260,8 +264,8 @@ int ServerImpl::run() {
 		}
 		storageLoaded_ = true;
 
-		logger_.info("Starting reindexer_server ({0}) on {1} HTTP, {2} RPC, with db '{3}'", REINDEX_VERSION, config_.HTTPAddr,
-					 config_.RPCAddr, config_.StoragePath);
+		logger_.info("Starting reindexer_server ({0}) on {1} HTTP, {2} RPC, {3} Cluster, with db '{4}'", REINDEX_VERSION, config_.HTTPAddr,
+					 config_.RPCAddr, config_.ClusterAddr, config_.StoragePath);
 
 		std::unique_ptr<Prometheus> prometheus;
 		std::unique_ptr<StatsCollector> statsCollector;
@@ -272,8 +276,7 @@ int ServerImpl::run() {
 
 		LoggerWrapper httpLogger("http");
 		HTTPServer httpServer(*dbMgr_, config_.WebRoot, httpLogger,
-							  HTTPServer::OptionalConfig{config_.DebugAllocs, config_.DebugPprof, config_.TxIdleTimeout, prometheus.get(),
-														 statsCollector.get()});
+							  HTTPServer::OptionalConfig{config_, prometheus.get(), statsCollector.get()});
 		if (!httpServer.Start(config_.HTTPAddr, loop_)) {
 			logger_.error("Can't listen HTTP on '{0}'", config_.HTTPAddr);
 			return EXIT_FAILURE;
@@ -285,19 +288,44 @@ int ServerImpl::run() {
 			logger_.error("Can't listen RPC on '{0}'", config_.RPCAddr);
 			return EXIT_FAILURE;
 		}
-#ifdef WITH_GRPC
-		reindexer::grpc::ReindexerService service(*dbMgr_, config_.TxIdleTimeout, loop_);
-		std::thread grpcServiceThread;
-		std::unique_ptr<::grpc::Server> grpcServer;
-		if (config_.EnableGRPC) {
-			const std::string address(config_.GRPCAddr);
-			::grpc::ServerBuilder builder;
-			builder.AddListeningPort(address, ::grpc::InsecureServerCredentials());
-			builder.RegisterService(&service);
-			grpcServer = builder.BuildAndStart();
-			logger_.info("Listening gRpc service on {0}", address);
-			grpcServiceThread = std::thread([&grpcServer]() { grpcServer->Wait(); });
+		RPCServer rpcServerCluster(*dbMgr_, rpcLogger, clientsStats.get(), config_.DebugAllocs, statsCollector.get());
+		if (!config_.RPCClusterAddr.empty()) {
+			if (!rpcServerCluster.Start(config_.RPCClusterAddr, loop_, config_.EnableConnectionsStats, config_.MaxUpdatesSize)) {
+				logger_.error("Can't listen Cluster RPC on '{0}'", config_.RPCClusterAddr);
+				return EXIT_FAILURE;
+			}
 		}
+
+		ClusterManagementServer clusterServer(*dbMgr_, rpcLogger, clientsStats.get(), config_.DebugAllocs, statsCollector.get());
+		if (!clusterServer.Start(config_.ClusterAddr, loop_, config_.EnableConnectionsStats)) {
+			std::cerr << "Can't listen ClusterControl on " << config_.ClusterAddr << std::endl;
+			logger_.error("Can't listen ClusterControl on '{0}'", config_.ClusterAddr);
+			return EXIT_FAILURE;
+		}
+#ifdef WITH_GRPC
+		void *hGRPCService = nullptr;
+#if REINDEX_WITH_LIBDL
+#ifdef __APPLE__
+		auto hGRPCServiceLib = dlopen("libreindexer_grpc_library.dylib", RTLD_NOW);
+#else
+		auto hGRPCServiceLib = dlopen("libreindexer_grpc_library.so", RTLD_NOW);
+#endif
+		if (hGRPCServiceLib && config_.EnableGRPC) {
+			auto start_grpc = reinterpret_cast<p_start_reindexer_grpc>(dlsym(hGRPCServiceLib, "start_reindexer_grpc"));
+
+			hGRPCService = start_grpc(*dbMgr_, config_.TxIdleTimeout, loop_, config_.GRPCAddr);
+			logger_.info("Listening gRPC service on {0}", config_.GRPCAddr);
+		} else if (config_.EnableGRPC) {
+			logger_.error("Can't load libreindexer_grpc_library. gRPC will not work: {}", dlerror());
+			return EXIT_FAILURE;
+		}
+#else
+		if (config_.EnableGRPC) {
+			hGRPCService = start_reindexer_grpc(*dbMgr_, config_.TxIdleTimeout, loop_, config_.GRPCAddr);
+			logger_.info("Listening gRPC service on {0}", config_.GRPCAddr);
+		}
+
+#endif
 #endif
 		auto sigCallback = [&](ev::sig &sig) {
 			logger_.info("Signal received. Terminating...");
@@ -337,17 +365,39 @@ int ServerImpl::run() {
 		logger_.info("Reindexer server terminating...");
 
 		if (statsCollector) statsCollector->Stop();
+		logger_.info("Stats collector shutdown completed.");
 		rpcServer.Stop();
+		logger_.info("RPC Server shutdown completed.");
+		clusterServer.Stop();
+		logger_.info("Cluster management server shutdown completed.");
 		httpServer.Stop();
+		logger_.info("HTTP Server shutdown completed.");
+		rpcServerCluster.Stop();
+		logger_.info("RPC Server dataReplicator shutdown completed.");
 #ifdef WITH_GRPC
-		if (config_.EnableGRPC) {
-			grpcServer->Shutdown();
-			if (grpcServiceThread.joinable()) grpcServiceThread.join();
+#if REINDEX_WITH_LIBDL
+		if (hGRPCServiceLib && config_.EnableGRPC) {
+			auto stop_grpc = reinterpret_cast<p_stop_reindexer_grpc>(dlsym(hGRPCServiceLib, "stop_reindexer_grpc"));
+			stop_grpc(hGRPCService);
+			logger_.info("gRPC Server shutdown completed.");
 		}
+#else
+		if (config_.EnableGRPC) {
+			stop_reindexer_grpc(hGRPCService);
+			logger_.info("gRPC Server shutdown completed.");
+		}
+
+#endif
 #endif
 	} catch (const Error &err) {
-		logger_.error("Unhandled exception occured: {0}", err.what());
+		logger_.error("Unhandled exception occurred: {0}", err.what());
 	}
+	logger_.info("Reindexer server shutdown completed.");
+	dbMgr_.reset();
+	logger_.info("Reindexer databases flush & shutdown completed.");
+
+	logger_ = LoggerWrapper();
+
 	return 0;
 }
 
@@ -383,10 +433,12 @@ Error ServerImpl::daemonize() {
 #endif
 
 Error ServerImpl::loggerConfigure() {
-	spdlog::drop_all();
-	spdlog::set_async_mode(16384, spdlog::async_overflow_policy::discard_log_msg, nullptr, std::chrono::seconds(2));
-	spdlog::set_level(spdlog::level::trace);
-	spdlog::set_pattern("[%L%d/%m %T.%e %t] %v");
+	static std::once_flag loggerConfigured;
+	std::call_once(loggerConfigured, [] {
+		spdlog::set_async_mode(16384, spdlog::async_overflow_policy::discard_log_msg, nullptr, std::chrono::seconds(2));
+		spdlog::set_level(spdlog::level::trace);
+		spdlog::set_pattern("[%L%d/%m %T.%e %t] %v");
+	});
 
 	vector<pair<string, string>> loggers = {
 		{"server", config_.ServerLog}, {"core", config_.CoreLog}, {"http", config_.HttpLog}, {"rpc", config_.RpcLog}};
@@ -407,48 +459,43 @@ Error ServerImpl::loggerConfigure() {
 			return Error(errLogic, "Can't create logger for '%s' to file '%s': %s\n", logger.first, logger.second, e.what());
 		}
 	}
-	coreLogger_ = LoggerWrapper("core");
 	logger_ = LoggerWrapper("server");
 	return 0;
 }
 
 void ServerImpl::initCoreLogger() {
-	auto callback = [&](int level, char *buf) {
-		if (level <= coreLogLevel_) {
+	std::weak_ptr<spdlog::logger> logger = spdlog::get("core");
+
+	auto callback = [this, logger](int level, char *buf) {
+		auto slogger = logger.lock();
+		if (slogger && level <= coreLogLevel_) {
 			switch (level) {
 				case LogNone:
 					break;
 				case LogError:
-					coreLogger_.error(buf);
+					slogger->error(buf);
 					break;
 				case LogWarning:
-					coreLogger_.warn(buf);
+					slogger->warn(buf);
 					break;
 				case LogTrace:
-					coreLogger_.trace(buf);
+					slogger->trace(buf);
 					break;
 				case LogInfo:
-					coreLogger_.info(buf);
+					slogger->info(buf);
 					break;
 				default:
-					coreLogger_.debug(buf);
+					slogger->debug(buf);
 					break;
 			}
 		}
 	};
-	if (coreLogLevel_) reindexer::logInstallWriter(callback);
-	(void)callback;
+	if (coreLogLevel_ && logger.lock()) reindexer::logInstallWriter(callback);
 }
 
 ServerImpl::~ServerImpl() {
-	logger_.info("Reindexer server shutdown completed.");
-	dbMgr_.reset();
-	async_.reset();
-	logger_.info("Reindexer databases shutdown completed.");
-
-	spdlog::apply_all([](std::shared_ptr<spdlog::logger> logger) { logger->flush(); });
 	if (coreLogLevel_) reindexer::logInstallWriter(nullptr);
-	spdlog::drop_all();
+	async_.reset();
 }
 
 }  // namespace reindexer_server

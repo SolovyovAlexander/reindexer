@@ -4,6 +4,7 @@
 #include <memory>
 #include <thread>
 #include <vector>
+#include "cluster/insdatareplicator.h"
 #include "core/cjson/tagsmatcher.h"
 #include "core/dbconfig.h"
 #include "core/index/keyentry.h"
@@ -52,21 +53,36 @@ namespace SortExprFuncs {
 struct DistanceBetweenJoinedIndexesSameNs;
 }  // namespace SortExprFuncs
 class ProtobufSchema;
+class SnapshotRecord;
+class Snapshot;
 
 struct NsContext {
 	NsContext(const RdxContext &rdxCtx) : rdxContext(rdxCtx) {}
-	NsContext &NoLock() {
-		noLock = true;
-		return *this;
-	}
-	NsContext &InTransaction() {
+	NsContext &InTransaction(lsn_t stepLsn) noexcept {
 		inTransaction = true;
+		originLsn = stepLsn;
 		return *this;
 	}
+	NsContext &CopiedNsRequest() noexcept {
+		isCopiedNsRequest = true;
+		return *this;
+	}
+	NsContext &InSnapshot(lsn_t stepLsn, bool wal) noexcept {
+		inSnapshot = true;
+		isWal = wal;
+		originLsn = stepLsn;
+		return *this;
+	}
+	lsn_t GetOriginLSN() const noexcept { return (inTransaction || inSnapshot) ? originLsn : rdxContext.originLsn_; }
+	bool IsForceSyncItem() const noexcept { return inSnapshot && !isWal; }
+	bool IsWalSyncItem() const noexcept { return inSnapshot && isWal; }
 
 	const RdxContext &rdxContext;
-	bool noLock = false;
 	bool inTransaction = false;
+	bool inSnapshot = false;
+	lsn_t originLsn;
+	bool isCopiedNsRequest = false;
+	bool isWal = false;
 };
 
 class NamespaceImpl {
@@ -78,10 +94,12 @@ protected:
 	friend class QueryPreprocessor;
 	friend class SelectIteratorContainer;
 	friend class ItemComparator;
+	friend class ItemModifier;
 	friend class Namespace;
 	friend SortExpression;
 	friend SortExprFuncs::DistanceBetweenJoinedIndexesSameNs;
 	friend class ReindexerImpl;
+	friend class SnapshotHandler;
 
 	class NSUpdateSortedContext : public UpdateSortedContext {
 	public:
@@ -135,16 +153,20 @@ protected:
 	};
 
 public:
+	using UpdatesContainer = h_vector<cluster::UpdateRecord, 1>;
 	enum OptimizationState : int { NotOptimized, OptimizingIndexes, OptimizingSortOrders, OptimizationCompleted };
 
 	typedef shared_ptr<NamespaceImpl> Ptr;
 	using Mutex = MarkedMutex<shared_timed_mutex, MutexMark::Namespace>;
 
-	NamespaceImpl(const string &_name, UpdatesObservers &observers);
+	NamespaceImpl(const string &_name, UpdatesObservers &observers, cluster::INsDataReplicator *clusterizator);
 	NamespaceImpl &operator=(const NamespaceImpl &) = delete;
 	~NamespaceImpl();
 
-	const string &GetName() const { return name_; }
+	const string &GetName(const RdxContext &ctx) const {
+		auto rlck = rLock(ctx);
+		return name_;
+	}
 	bool IsSystem(const RdxContext &ctx) const {
 		auto rlck = rLock(ctx);
 		return isSystem();
@@ -163,15 +185,15 @@ public:
 	void SetSchema(string_view schema, const RdxContext &ctx);
 	std::string GetSchema(int format, const RdxContext &ctx);
 
-	void Insert(Item &item, const NsContext &ctx);
-	void Update(Item &item, const NsContext &ctx);
-	void Update(const Query &query, QueryResults &result, const NsContext &);
-	void Upsert(Item &item, const NsContext &);
+	void Insert(Item &item, const RdxContext &ctx);
+	void Update(Item &item, const RdxContext &ctx);
+	void Update(const Query &query, QueryResults &result, const RdxContext &);
+	void Upsert(Item &item, const RdxContext &);
 
-	void Delete(Item &item, const NsContext &);
-	void Delete(const Query &query, QueryResults &result, const NsContext &);
-	void Truncate(const NsContext &);
-	void Refill(vector<Item> &, const NsContext &);
+	void Delete(Item &item, const RdxContext &);
+	void Delete(const Query &query, QueryResults &result, const RdxContext &);
+	void Truncate(const RdxContext &);
+	void Refill(vector<Item> &, const RdxContext &);
 
 	void Select(QueryResults &result, SelectCtx &params, const RdxContext &);
 	NamespaceDef GetDefinition(const RdxContext &ctx);
@@ -186,13 +208,13 @@ public:
 	Transaction NewTransaction(const RdxContext &ctx);
 	void CommitTransaction(Transaction &tx, QueryResults &result, const NsContext &ctx);
 
-	Item NewItem(const NsContext &ctx);
+	Item NewItem(const RdxContext &ctx);
 	void ToPool(ItemImpl *item);
 	// Get meta data from storage by key
 	string GetMeta(const string &key, const RdxContext &ctx);
 	// Put meta data to storage by key
-	void PutMeta(const string &key, const string_view &data, const NsContext &);
-	int64_t GetSerial(const string &field);
+	void PutMeta(const string &key, const string_view &data, const RdxContext &);
+	int64_t GetSerial(const string &field, UpdatesContainer &replUpdates);
 
 	int getIndexByName(const string &index) const;
 	bool getIndexByName(const string &name, int &index) const;
@@ -204,6 +226,7 @@ public:
 	// Replication slave mode functions
 	ReplicationState GetReplState(const RdxContext &) const;
 	void SetReplLSNs(LSNPair LSNs, const RdxContext &ctx);
+	ReplicationStateV2 GetReplStateV2(const RdxContext &) const;
 
 	void SetSlaveReplStatus(ReplicationState::Status, const Error &, const RdxContext &);
 	void SetSlaveReplMasterState(MasterState state, const RdxContext &);
@@ -214,6 +237,10 @@ public:
 	StorageOpts GetStorageOpts(const RdxContext &);
 	std::shared_ptr<const Schema> GetSchemaPtr(const RdxContext &ctx) const;
 	int getNsNumber() const { return schema_ ? schema_->GetProtobufNsNumber() : 0; }
+
+	void SetClusterizationStatus(NsClusterizationStatus &&status, const RdxContext &ctx);
+	void ApplySnapshotChunk(const SnapshotChunk &ch, const RdxContext &ctx);
+	void GetSnapshot(Snapshot &snapshot, lsn_t from, const RdxContext &ctx);
 
 protected:
 	struct SysRecordsVersions {
@@ -228,16 +255,33 @@ protected:
 		typedef contexted_shared_lock<Mutex, const RdxContext> RLockT;
 		typedef contexted_unique_lock<Mutex, const RdxContext> WLockT;
 
+		Locker(cluster::INsDataReplicator *clusterizator, NamespaceImpl &owner) : clusterizator_(clusterizator), owner_(owner) {}
+
 		RLockT RLock(const RdxContext &ctx) const { return RLockT(mtx_, &ctx); }
 		WLockT WLock(const RdxContext &ctx) const {
-			WLockT lck(mtx_, &ctx);
-			if (readonly_.load(std::memory_order_acquire)) {
-				throw Error(errNamespaceInvalidated, "NS invalidated"_sv);
+			bool synchronized = false;
+			WLockT lck(mtx_, std::defer_lock_t(), &ctx);
+			while (!synchronized) {
+				if (lck.owns_lock()) {
+					lck.unlock();
+				}
+				// TODO: Don't check synchronization for locks from replicator
+				if (clusterizator_ && !ctx.NoWaitSync()) {
+					// This is required in case of rename during sync wait
+					auto name = owner_.GetName(ctx);
+					clusterizator_->AwaitSynchronization(name, ctx);
+				}
+
+				lck.lock();
+				if (readonly_.load(std::memory_order_acquire)) {
+					throw Error(errNamespaceInvalidated, "NS invalidated"_sv);
+				}
+				synchronized = !clusterizator_ || ctx.NoWaitSync() || clusterizator_->IsSynchronized(owner_.name_);
 			}
 			return lck;
 		}
 		unique_lock<std::mutex> StorageLock() const {
-			unique_lock<std::mutex> lck(storage_mtx_);
+			unique_lock<std::mutex> lck(storageMtx_);
 			if (readonly_.load(std::memory_order_acquire)) {
 				throw Error(errNamespaceInvalidated, "NS invalidated"_sv);
 			}
@@ -247,8 +291,10 @@ protected:
 
 	private:
 		mutable Mutex mtx_;
-		mutable std::mutex storage_mtx_;
+		mutable std::mutex storageMtx_;
 		std::atomic<bool> readonly_ = {false};
+		cluster::INsDataReplicator *clusterizator_;
+		NamespaceImpl &owner_;
 	};
 
 	ReplicationState getReplState() const;
@@ -256,6 +302,7 @@ protected:
 	void writeSysRecToStorage(string_view data, string_view sysTag, uint64_t &version, bool direct);
 	void saveIndexesToStorage();
 	void saveSchemaToStorage();
+	void saveTagsMatcherToStorage();
 	Error loadLatestSysRecord(string_view baseSysTag, uint64_t &version, string &content);
 	bool loadIndexesFromStorage();
 	void saveReplStateToStorage();
@@ -265,28 +312,35 @@ protected:
 	void initWAL(int64_t minLSN, int64_t maxLSN);
 
 	void markUpdated();
+	Item newItem();
+	void doUpdate(const Query &query, QueryResults &result, UpdatesContainer &pendedRepl, const NsContext &);
+	void doDelete(const Query &query, QueryResults &result, UpdatesContainer &pendedRepl, const NsContext &);
 	void doUpsert(ItemImpl *ritem, IdType id, bool doUpdate);
-	void modifyItem(Item &item, const NsContext &, int mode = ModeUpsert);
-	void updateItemFromCJSON(IdType id, const Query &q, const NsContext &);
-	void updateFieldIndex(IdType id, int field, VariantArray v, Payload &pl);
-	void updateSingleField(const UpdateEntry &updateField, const IdType &itemId, Payload &pl);
-	void updateItemFields(IdType itemId, const Query &q, bool rowBasedReplication, const NsContext &);
-	void updateItemFromQuery(IdType itemId, const Query &q, bool rowBasedReplication, const NsContext &, bool withJsonUpdates);
+	void modifyItem(Item &item, int mode, const RdxContext &ctx);
+	void deleteItem(Item &item, UpdatesContainer &pendedRepl, const NsContext &ctx);
+	void doModifyItem(Item &item, int mode, UpdatesContainer &pendedRepl, const NsContext &ctx, IdType suggestedId = -1);
 	void updateTagsMatcherFromItem(ItemImpl *ritem);
 	void updateItems(PayloadType oldPlType, const FieldsSet &changedFields, int deltaFields);
 	void doDelete(IdType id);
+	void doTruncate(UpdatesContainer &pendedRepl, const NsContext &ctx);
 	void optimizeIndexes(const NsContext &);
 	void insertIndex(Index *newIndex, int idxNo, const string &realName);
 	void addIndex(const IndexDef &indexDef);
+	void doAddIndex(const IndexDef &indexDef, UpdatesContainer &pendedRepl, const NsContext &ctx);
 	void addCompositeIndex(const IndexDef &indexDef);
 	void verifyUpdateIndex(const IndexDef &indexDef) const;
 	void verifyUpdateCompositeIndex(const IndexDef &indexDef) const;
 	void updateIndex(const IndexDef &indexDef);
+	void doUpdateIndex(const IndexDef &indexDef, UpdatesContainer &pendedRepl, const NsContext &ctx);
 	void dropIndex(const IndexDef &index);
-	void addToWAL(const IndexDef &indexDef, WALRecType type, const RdxContext &ctx);
-	void addToWAL(string_view json, WALRecType type, const RdxContext &ctx);
-	VariantArray preprocessUpdateFieldValues(const UpdateEntry &updateEntry, IdType itemId);
+	void doDropIndex(const IndexDef &index, UpdatesContainer &pendedRepl, const NsContext &ctx);
+	void addToWAL(const IndexDef &indexDef, WALRecType type, const NsContext &ctx);
+	void addToWAL(string_view json, WALRecType type, const NsContext &ctx);
+	VariantArray preprocessUpdateFieldValues(const UpdateEntry &updateEntry, IdType itemId, UpdatesContainer &pendedRepl);
 	void removeExpiredItems(RdxActivityContext *);
+	void setSchema(string_view schema, UpdatesContainer &pendedRepl, const NsContext &ctx);
+	void replicateItem(IdType itemId, const NsContext &ctx, bool statementReplication, uint64_t oldPlHash, size_t oldItemCapacity,
+					   UpdatesContainer &pendedRepl);
 
 	void recreateCompositeIndexes(int startIdx, int endIdx);
 	NamespaceDef getDefinition() const;
@@ -295,12 +349,12 @@ protected:
 
 	string getMeta(const string &key) const;
 	void flushStorage(const RdxContext &);
-	void putMeta(const string &key, const string_view &data, const RdxContext &ctx);
+	void putMeta(const string &key, const string_view &data, UpdatesContainer &pendedRepl, const NsContext &ctx);
 
 	pair<IdType, bool> findByPK(ItemImpl *ritem, const RdxContext &);
 	int getSortedIdxCount() const;
 	void updateSortedIdxCount();
-	void setFieldsBasedOnPrecepts(ItemImpl *ritem);
+	void setFieldsBasedOnPrecepts(ItemImpl *ritem, UpdatesContainer &replUpdates);
 
 	void putToJoinCache(JoinCacheRes &res, std::shared_ptr<JoinPreResult> preResult) const;
 	void putToJoinCache(JoinCacheRes &res, JoinCacheVal &val) const;
@@ -318,6 +372,8 @@ protected:
 	void markReadOnly() { locker_.MarkReadOnly(); }
 	Locker::WLockT wLock(const RdxContext &ctx) const { return locker_.WLock(ctx); }
 	Locker::RLockT rLock(const RdxContext &ctx) const { return locker_.RLock(ctx); }
+	void checkClusterRole(const RdxContext &ctx) const;
+	void checkClusterStatus(const RdxContext &ctx) const;
 
 	bool SortOrdersBuilt() const { return optimizationState_ == OptimizationState::OptimizationCompleted; }
 
@@ -356,11 +412,13 @@ private:
 	NamespaceImpl(const NamespaceImpl &src);
 
 	bool isSystem() const { return !name_.empty() && name_[0] == '#'; }
-	IdType createItem(size_t realSize);
+	IdType createItem(size_t realSize, IdType suggestedId);
 	void deleteStorage();
 	void checkApplySlaveUpdate(bool v);
 
-	void processWalRecord(const WALRecord &wrec, const RdxContext &ctx, lsn_t itemLsn = lsn_t(), Item *item = nullptr);
+	void processWalRecord(WALRecord &&wrec, const NsContext &ctx, lsn_t itemLsn = lsn_t(), Item *item = nullptr);
+	void replicate(cluster::UpdateRecord &&rec, Locker::WLockT &&wlck, const RdxContext &ctx);
+	void replicate(UpdatesContainer &&recs, Locker::WLockT &&wlck, const NsContext &ctx);
 
 	void setReplLSNs(LSNPair LSNs);
 	void setTemporary() { repl_.temporary = true; }
@@ -376,6 +434,7 @@ private:
 	WALTracker wal_;
 	ReplicationState repl_;
 	UpdatesObservers *observers_;
+	NsClusterizationStatus clusterStatus_;
 
 	StorageOpts storageOpts_;
 	std::atomic<int64_t> lastSelectTime_;
@@ -393,6 +452,8 @@ private:
 	size_t itemsDataSize_ = 0;
 
 	std::atomic<int> optimizationState_ = {OptimizationState::NotOptimized};
+
+	cluster::INsDataReplicator *clusterizator_;
 };
 
 }  // namespace reindexer
