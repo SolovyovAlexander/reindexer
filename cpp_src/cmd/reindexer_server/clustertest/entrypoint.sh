@@ -34,27 +34,19 @@ echo "  -" >> $CLUSTER_CONF
 echo "    ip_addr: node2" >> $CLUSTER_CONF
 echo "    server_id: 2" >> $CLUSTER_CONF
 echo "    database: $CLUSTER_DB_NAME" >> $CLUSTER_CONF
-<<<<<<< HEAD
 echo "    rpc_port: 8534" >> $CLUSTER_CONF
-=======
-echo "    rpc_port: 6534" >> $CLUSTER_CONF
->>>>>>> feature/cluster-syncs
 echo "    management_port: 7645" >> $CLUSTER_CONF
 echo "  -" >> $CLUSTER_CONF
 echo "    ip_addr: node3" >> $CLUSTER_CONF
 echo "    server_id: 3" >> $CLUSTER_CONF
 echo "    database: $CLUSTER_DB_NAME" >> $CLUSTER_CONF
-<<<<<<< HEAD
 echo "    rpc_port: 8534" >> $CLUSTER_CONF
-=======
-echo "    rpc_port: 6534" >> $CLUSTER_CONF
->>>>>>> feature/cluster-syncs
 echo "    management_port: 7645" >> $CLUSTER_CONF
 echo "  -" >> $CLUSTER_CONF
 echo "    ip_addr: node4" >> $CLUSTER_CONF
 echo "    server_id: 4" >> $CLUSTER_CONF
 echo "    database: $CLUSTER_DB_NAME" >> $CLUSTER_CONF
-echo "    rpc_port: 6534" >> $CLUSTER_CONF
+echo "    rpc_port: 8534" >> $CLUSTER_CONF
 echo "    management_port: 7645" >> $CLUSTER_CONF
 
 >$REPL_CONF
