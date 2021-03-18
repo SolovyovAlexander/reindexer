@@ -29,7 +29,7 @@ class Replicator;
 class IClientsStats;
 class ProtobufSchema;
 namespace cluster {
-class NodeData;
+struct NodeData;
 class Clusterizator;
 class DataReplicator;
 struct RaftInfo;

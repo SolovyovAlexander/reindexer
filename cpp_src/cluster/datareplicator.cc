@@ -8,7 +8,6 @@ namespace cluster {
 
 constexpr int kDefaultSyncThreadCount = 4;
 constexpr size_t kNsReplicationRoutineStackSize = 128 * 1024;
-constexpr auto kFollowerNsResyncInterval = std::chrono::milliseconds(1000);
 constexpr auto kLeaderNsResyncInterval = std::chrono::milliseconds(1000);
 
 DataReplicator::DataReplicator(ReindexerImpl& thisNode, std::function<void()> requestElectionsRestartCb)
@@ -319,7 +318,7 @@ void DataReplicator::updatesReadingRoutine(size_t shardId) {
 					continue;
 				}
 			}
-			updatesData.updates.emplace_back(std::move(it));
+			updatesData.updates.emplace_back(it);
 			updatesData.listeners.Notify(--updatesData.updates.end());
 			++it;
 		}
@@ -737,6 +736,7 @@ Error DataReplicator::nsUpdatesHandlingLoop(size_t nodeId, string_view nsName, D
 	auto& updatesList = found->second.updates;
 	std::cerr << serverId_ << ": Start updates handling loop: " << nodeId << ":" << nsName << "; lates known lsn is " << latestLsn
 			  << std::endl;
+	bool requestElectionsOnNextError = true;
 
 	while (!terminate_) {
 		std::cerr << serverId_ << ":" << nodeId << ": Awaiting updates" << std::endl;
@@ -744,7 +744,6 @@ Error DataReplicator::nsUpdatesHandlingLoop(size_t nodeId, string_view nsName, D
 		if (updP.second) {
 			std::cerr << serverId_ << ":" << nodeId << ": Got new update from tmp queue" << std::endl;
 			Error err;
-			bool requestElectionsOnNextError = false;
 			auto it = updP.first;
 			while (it != updatesList.end() && !terminate_) {
 				bool isEmmiter = it->data.emmiterServerId == node.serverId;
@@ -781,16 +780,21 @@ Error DataReplicator::nsUpdatesHandlingLoop(size_t nodeId, string_view nsName, D
 					if (node.type == ReplicatorNode::Type::Cluster && ++it->errors == consensusCnt_) {
 						it->OnResult(Error(errUpdateReplication, "Unable to sent update to enough amount of replicas"));
 						if (requestElectionsOnNextError) {
+							std::cerr << serverId_ << ":" << nodeId << ":" << nsName << ":Requesting for electon:" << err.what()
+									  << ";errors: " << it->errors << ";consensus:" << consensusCnt_ << ";lsn" << it->data.lsn << std::endl;
+
 							requestElectionsOnNextError = false;
 							requestElectionsRestartCb_();
 						}
 					}
 				}
-				std::cerr << serverId_ << ":" << nodeId << ":" << nsName << ":apply:" << err.what() << "; Required: " << consensusCnt_
-						  << "; succeed: " << it->aproves << "; failed: " << it->errors << "; replicas: " << it->replicas + 1 << std::endl;
+				std::cerr << serverId_ << ":" << nodeId << ":" << nsName << ":apply:" << (err.ok() ? "OK" : "ERROR:" + err.what())
+						  << "; Required: " << consensusCnt_ << "; succeed: " << it->aproves << "; failed: " << it->errors
+						  << "; replicas: " << it->replicas + 1 << std::endl;
 				if (++it->replicas == threadLocal.nodes.size()) {
 					it = updatesList.erase(it);
-					std::cerr << "Removing update from tmp queue; updatesList size: " << updatesList.size() << std::endl;
+					std::cerr << serverId_ << ":" << nodeId << ":" << nsName
+							  << ": Removing update from tmp queue; updatesList size: " << updatesList.size() << std::endl;
 				} else {
 					++it;
 				}
@@ -838,11 +842,13 @@ void DataReplicator::handleUpdatesWithError(size_t nodeId, string_view nsName, D
 				requestElectionsRestartCb_();
 			}
 		}
-		std::cerr << serverId_ << ":" << nodeId << ":" << nsName << ":drop:" << err.what() << "; Required: " << consensusCnt_
-				  << "; succeed: " << it->aproves << "; failed: " << it->errors << "; replicas: " << it->replicas + 1 << std::endl;
+		std::cerr << serverId_ << ":" << nodeId << ":" << nsName << ":drop:" << err.what() << "; lsn: " << it->data.lsn
+				  << "; Required: " << consensusCnt_ << "; succeed: " << it->aproves << "; failed: " << it->errors
+				  << "; replicas: " << it->replicas + 1 << std::endl;
 		if (++it->replicas == threadLocal.nodes.size()) {
 			it = updatesList.erase(it);
-			std::cerr << "Removing update from tmp queue; updatesList size: " << updatesList.size() << std::endl;
+			std::cerr << serverId_ << ":" << nodeId << ":" << nsName
+					  << ": Removing update from tmp queue; updatesList size: " << updatesList.size() << std::endl;
 		} else {
 			++it;
 		}

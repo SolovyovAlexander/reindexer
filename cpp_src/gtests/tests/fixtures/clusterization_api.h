@@ -42,6 +42,7 @@ public:
 	public:
 		Cluster(net::ev::dynamic_loop& loop, size_t initialServerId, size_t count,
 				std::chrono::milliseconds resyncTimeout = std::chrono::milliseconds(3000));
+		~Cluster();
 
 		void InitNs(size_t id, string_view nsName);
 		void FillData(size_t id, string_view nsName, size_t from, size_t count);

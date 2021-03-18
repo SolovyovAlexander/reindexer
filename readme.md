@@ -1158,3 +1158,4 @@ You can get help in several ways:
 
 1. Join Reindexer [Telegram group](https://t.me/reindexer)
 2. Write [an issue](https://github.com/restream/reindexer/issues/new)
+

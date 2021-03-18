@@ -168,8 +168,8 @@ Error RaftManager::LeadersPing(const NodeData& leader) {
 	return errOK;
 }
 
-void RaftManager::Stop() {
-	SetTerminateFlag(true);
+void RaftManager::AwaitTermination() {
+	assert(terminate_);
 	coroutine::wait_group wg;
 	pingWg_.wait();
 	for (auto& node : nodes_) {

@@ -29,7 +29,7 @@ public:
 	int32_t GetTerm() const { return getTerm(voteData_.load()); }
 	Error SuggestLeader(const cluster::NodeData &suggestion, cluster::NodeData &response);
 	Error LeadersPing(const cluster::NodeData &);
-	void Stop();
+	void AwaitTermination();
 
 private:
 	using ClockT = std::chrono::high_resolution_clock;

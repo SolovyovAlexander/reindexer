@@ -28,7 +28,7 @@ else()
   option (LINK_RESOURCES "Link web resources as binary data" ON)
 endif()
 
-set (REINDEXER_VERSION_DEFAULT "3.0.3") 
+set (REINDEXER_VERSION_DEFAULT "3.1.0") 
 
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE "RelWithDebInfo")
@@ -620,7 +620,7 @@ if (NOT WIN32)
     "estl/h_vector.h" "estl/string_view.h" "estl/mutex.h" "estl/intrusive_ptr.h" "estl/trivial_reverse_iterator.h" "estl/span.h"
     "client/reindexer.h" "client/item.h" "client/reindexerconfig.h" "client/queryresults.h" "client/resultserializer.h"
     "client/internalrdxcontext.h" "client/transaction.h"
-    "client/cororeindexer.h" "client/coroqueryresults.h" "client/corotransaction.h"
+    "client/cororeindexer.h" "client/coroqueryresults.h" "client/corotransaction.h" "client/connectopts.h"
     "net/ev/ev.h" "coroutine/coroutine.h" "coroutine/channel.h" "coroutine/waitgroup.h" "coroutine/context/fcontext.hpp"
     "debug/backtrace.h" "debug/allocdebug.h" "debug/resolver.h"
     "vendor/mpark/variant.h" "vendor/gason/gason.h"

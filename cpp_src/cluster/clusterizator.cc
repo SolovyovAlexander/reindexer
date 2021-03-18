@@ -146,7 +146,7 @@ void Clusterizator::clusterControlRoutine() {
 			}
 		} while (!terminate_ && condPredicat());
 	}
-	raftManager_.Stop();
+	raftManager_.AwaitTermination();
 }
 
 std::string Clusterizator::getManagementDsn(int id) const {
@@ -159,9 +159,9 @@ std::string Clusterizator::getManagementDsn(int id) const {
 }
 
 void Clusterizator::stop() noexcept {
-	terminate_ = true;
 	raftManager_.SetTerminateFlag(true);
 	replicator_.SetTerminateFlag(true);
+	terminate_ = true;
 	if (controlThread_.joinable()) {
 		controlThread_.join();
 	}
@@ -169,8 +169,8 @@ void Clusterizator::stop() noexcept {
 		replicatorThread_.join();
 	}
 	terminate_ = false;
-	raftManager_.SetTerminateFlag(false);
 	replicator_.SetTerminateFlag(false);
+	raftManager_.SetTerminateFlag(false);
 }
 
 Error Clusterizator::validateConfig() const noexcept {

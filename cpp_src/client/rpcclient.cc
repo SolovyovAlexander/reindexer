@@ -440,11 +440,20 @@ Error RPCClient::selectImpl(string_view query, QueryResults& result, cproto::Cli
 
 	WrSerializer pser;
 	h_vector<int32_t, 4> vers;
+
+	NSArray nsArray;
+	Query queryNs;
+	queryNs.FromSQL(query);
+	queryNs.WalkNested(true, true, [this, &nsArray](const Query& q) { nsArray.push_back(getNamespace(q._namespace)); });
+	for (auto& ns : nsArray) {
+		shared_lock<shared_timed_mutex> lck(ns->lck_);
+		vers.push_back(ns->tagsMatcher_.version() ^ ns->tagsMatcher_.stateToken());
+	}
 	vec2pack(vers, pser);
 
 	if (!conn) conn = getConn();
 
-	result = QueryResults(conn, {}, ctx.cmpl(), result.fetchFlags_, config_.FetchAmount, config_.RequestTimeout);
+	result = QueryResults(conn, std::move(nsArray), ctx.cmpl(), result.fetchFlags_, config_.FetchAmount, config_.RequestTimeout);
 
 	auto icompl = [&result](const RPCAnswer& ret, cproto::ClientConnection* /*conn*/) {
 		try {

@@ -397,6 +397,7 @@ int ServerImpl::run() {
 	logger_.info("Reindexer databases flush & shutdown completed.");
 
 	logger_ = LoggerWrapper();
+	spdlog::drop_all();
 
 	return 0;
 }

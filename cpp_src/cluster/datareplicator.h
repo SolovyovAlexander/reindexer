@@ -51,7 +51,7 @@ private:
 
 	struct Update {
 	public:
-		Update(UpdatesIteratorT &&it) : data(std::move(it->data)), queueIt_(std::move(it)) {}
+		Update(UpdatesIteratorT it) : data(std::move(it->data)), queueIt_(std::move(it)) {}
 		void OnResult(Error &&err) noexcept {
 			assert(!erased_);
 			erased_ = true;
@@ -98,6 +98,13 @@ private:
 	};
 
 	struct UpdatesData {
+		UpdatesData() = default;
+		UpdatesData(UpdatesData &&d) noexcept
+			: listeners(std::move(d.listeners)), updates(std::move(d.updates)) {}  // Expliciti declaration for win build
+		UpdatesData(const UpdatesData &) = delete;
+		UpdatesData &operator=(UpdatesData &&) noexcept = default;
+		UpdatesData &operator=(const UpdatesData &) = delete;
+
 		UpdatesListeners listeners;
 		std::list<Update> updates;	// TODO: maybe we need more efficient container?
 	};

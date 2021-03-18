@@ -253,6 +253,7 @@ Error ClusterProxy::Delete(const Query &query, QueryResults &result, const Inter
 			return err;
 		}
 		return err;
+
 	*/
 }
 Error ClusterProxy::Select(string_view query, QueryResults &result, const InternalRdxContext &ctx) {

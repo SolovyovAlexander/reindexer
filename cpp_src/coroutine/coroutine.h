@@ -109,8 +109,6 @@ private:
 
 		std::function<void()> func;
 
-		void *asan_fake_stack = nullptr;
-
 	private:
 		std::vector<char> stack_;
 		size_t stack_size_ = k_default_stack_limit;

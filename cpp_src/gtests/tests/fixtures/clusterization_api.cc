@@ -67,6 +67,15 @@ ClusterizationApi::Cluster::Cluster(net::ev::dynamic_loop& loop, size_t initialS
 	}
 }
 
+ClusterizationApi::Cluster::~Cluster()
+{
+	for (size_t i = 0; i < svc_.size(); ++i) {
+		if (svc_[i].IsRunning()) {
+			StopServer(i);
+		}
+	}
+}
+
 void ClusterizationApi::Cluster::InitNs(size_t id, string_view nsName) {
 	auto opt = StorageOpts().Enabled(true);
 
@@ -197,7 +206,7 @@ int ClusterizationApi::Cluster::AwaitLeader(std::chrono::seconds timeout, bool f
 
 void ClusterizationApi::Cluster::WaitSync(string_view ns) {
 	auto now = std::chrono::milliseconds(0);
-	const auto pause = std::chrono::milliseconds(10);
+	const auto pause = std::chrono::milliseconds(100);
 	size_t syncedCnt = 0;
 	while (syncedCnt != svc_.size()) {
 		now += pause;

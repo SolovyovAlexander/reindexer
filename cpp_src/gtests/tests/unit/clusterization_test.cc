@@ -68,14 +68,14 @@ TEST_F(ClusterizationApi, ApiTestSelect) {
 		try {
 			const std::string nsName = "ns";
 			Cluster cluster(loop, 0, kClusterSize);
-			auto leaderId = cluster.AwaitLeader(std::chrono::seconds(10));
-			int nodeSlave = (leaderId + 1) % kClusterSize;
+			auto leaderId = cluster.AwaitLeader(kMaxElectionsTime);
+			int followerId = (leaderId + 1) % kClusterSize;
 			reindexer::NamespaceDef nsdef(nsName);
 			nsdef.AddIndex("id", "hash", "int", IndexOpts().PK());	//.AddIndex("name", "tree", "string", IndexOpts());
 
-			Error err = cluster.GetServerControl(nodeSlave)->api.reindexer->AddNamespace(nsdef);
+			Error err = cluster.GetServerControl(followerId)->api.reindexer->AddNamespace(nsdef);
 
-			auto item = cluster.GetServerControl(nodeSlave)->api.reindexer->NewItem(nsName);
+			auto item = cluster.GetServerControl(followerId)->api.reindexer->NewItem(nsName);
 			ASSERT_TRUE(item.Status().ok()) << item.Status().what();
 			int pk = 11;
 			std::string itemJson =
@@ -90,14 +90,14 @@ TEST_F(ClusterizationApi, ApiTestSelect) {
 
 			err = item.FromJSON(itemJson);
 			ASSERT_TRUE(err.ok()) << err.what();
-			err = cluster.GetServerControl(nodeSlave)->api.reindexer->Insert(nsName, item);
+			err = cluster.GetServerControl(followerId)->api.reindexer->Insert(nsName, item);
 			ASSERT_TRUE(err.ok()) << err.what();
 			{
 				reindexer::client::QueryResults qresSelectTmp;
 				// reindexer::Query q1;
 				// q1.FromSQL("select * from " + nsName);
-				// err = cluster.GetServerControl(nodeSlave)->api.reindexer->Select(q1, qresSelectTmp);
-				err = cluster.GetServerControl(nodeSlave)->api.reindexer->Select("select * from " + nsName, qresSelectTmp);
+				// err = cluster.GetServerControl(followerId)->api.reindexer->Select(q1, qresSelectTmp);
+				err = cluster.GetServerControl(followerId)->api.reindexer->Select("select * from " + nsName, qresSelectTmp);
 				ASSERT_TRUE(err.ok()) << err.what();
 				ASSERT_TRUE(qresSelectTmp.Count() == 1) << "select count = " << qresSelectTmp.Count();
 				auto it = qresSelectTmp.begin();
@@ -122,25 +122,25 @@ TEST_F(ClusterizationApi, ApiTestSelect) {
 
 TEST_F(ClusterizationApi, ApiTest) {
 	//Работа через follower
-	const size_t kClusterSize = 4;
+	const size_t kClusterSize = 5;
 	net::ev::dynamic_loop loop;
 	loop.spawn([&loop] {
 		try {
-			const std::string nsName = "ns";
+			const std::string kNsName = "ns";
 			Cluster cluster(loop, 0, kClusterSize);
-			auto leaderId = cluster.AwaitLeader(std::chrono::seconds(10));
-			int nodeSlave = (leaderId + 1) % kClusterSize;
+			auto leaderId = cluster.AwaitLeader(kMaxElectionsTime);
+			int followerId = (leaderId + 1) % kClusterSize;
 
 			// reindexer::NamespaceDef nsdef(nsName);
 			// nsdef.AddIndex("id", "hash", "int", IndexOpts().PK());	//.AddIndex("name", "tree", "string", IndexOpts());
 
-			// Error err = cluster.GetServerControl(nodeSlave)->api.reindexer->AddNamespace(nsdef);
-			Error err = cluster.GetServerControl(nodeSlave)->api.reindexer->OpenNamespace(nsName);
+			// Error err = cluster.GetServerControl(followerId)->api.reindexer->AddNamespace(nsdef);
+			Error err = cluster.GetServerControl(followerId)->api.reindexer->OpenNamespace(kNsName);
 			ASSERT_TRUE(err.ok()) << err.what();
-			cluster.GetServerControl(nodeSlave)->api.reindexer->AddIndex(nsName, {"id", "hash", "int", IndexOpts().PK()});
+			cluster.GetServerControl(followerId)->api.reindexer->AddIndex(kNsName, {"id", "hash", "int", IndexOpts().PK()});
 
 			auto sel = [&](int node, std::string& itemJson) {
-				reindexer::Query q(nsName);
+				reindexer::Query q(kNsName);
 				reindexer::client::QueryResults qres;
 				Error err = cluster.GetServerControl(node)->api.reindexer->Select(q, qres);
 				ASSERT_TRUE(err.ok()) << err.what();
@@ -149,16 +149,16 @@ TEST_F(ClusterizationApi, ApiTest) {
 				ASSERT_TRUE(itsel.GetJSON() == itemJson) << itsel.GetJSON();
 			};
 			auto sel0 = [&](int node) {
-				reindexer::Query q(nsName);
+				reindexer::Query q(kNsName);
 				reindexer::client::QueryResults qres;
-				Error err = cluster.GetServerControl(node)->api.reindexer->Select(q, qres);
+				err = cluster.GetServerControl(node)->api.reindexer->Select(q, qres);
 				ASSERT_TRUE(err.ok()) << err.what();
 				ASSERT_TRUE(qres.Count() == 0);
 			};
 
 			int pk = 10;
 			{
-				auto item = cluster.GetServerControl(nodeSlave)->api.reindexer->NewItem(nsName);
+				auto item = cluster.GetServerControl(followerId)->api.reindexer->NewItem(kNsName);
 				ASSERT_TRUE(item.Status().ok()) << item.Status().what();
 
 				std::string itemJson =
@@ -172,9 +172,9 @@ TEST_F(ClusterizationApi, ApiTest) {
 					"}";
 				err = item.FromJSON(itemJson);
 				ASSERT_TRUE(err.ok()) << err.what();
-				err = cluster.GetServerControl(nodeSlave)->api.reindexer->Insert(nsName, item);
+				err = cluster.GetServerControl(followerId)->api.reindexer->Insert(kNsName, item);
 				ASSERT_TRUE(err.ok()) << err.what();
-				sel(nodeSlave, itemJson);
+				sel(followerId, itemJson);
 				sel(leaderId, itemJson);
 
 				std::string itemJsonUp =
@@ -187,18 +187,18 @@ TEST_F(ClusterizationApi, ApiTest) {
 					"\""
 					"}";
 				err = item.FromJSON(itemJsonUp);
-				err = cluster.GetServerControl(nodeSlave)->api.reindexer->Upsert(nsName, item);
+				err = cluster.GetServerControl(followerId)->api.reindexer->Upsert(kNsName, item);
 				ASSERT_TRUE(err.ok()) << err.what();
 
-				sel(nodeSlave, itemJsonUp);
+				sel(followerId, itemJsonUp);
 				sel(leaderId, itemJsonUp);
 			}
 
 			{
 				reindexer::Query q;
-				q.FromSQL("select * from " + nsName + " where id=" + std::to_string(pk));
+				q.FromSQL("select * from " + kNsName + " where id=" + std::to_string(pk));
 				reindexer::client::QueryResults qres;
-				err = cluster.GetServerControl(nodeSlave)->api.reindexer->Select(q, qres);
+				err = cluster.GetServerControl(followerId)->api.reindexer->Select(q, qres);
 				ASSERT_TRUE(err.ok()) << err.what();
 				ASSERT_EQ(qres.Count(), 1);
 				auto itsel = qres.begin().GetItem();
@@ -212,27 +212,27 @@ TEST_F(ClusterizationApi, ApiTest) {
 					"\""
 					"}";
 				itsel.FromJSON(itemJson);
-				cluster.GetServerControl(nodeSlave)->api.reindexer->Update(nsName, itsel);
-				sel(nodeSlave, itemJson);
+				cluster.GetServerControl(followerId)->api.reindexer->Update(kNsName, itsel);
+				sel(followerId, itemJson);
 				sel(leaderId, itemJson);
 			}
 
 			{
 				reindexer::Query q;
-				q.FromSQL("select * from " + nsName + " where id=" + std::to_string(pk));
+				q.FromSQL("select * from " + kNsName + " where id=" + std::to_string(pk));
 				reindexer::client::QueryResults qres;
-				err = cluster.GetServerControl(nodeSlave)->api.reindexer->Select(q, qres);
+				err = cluster.GetServerControl(followerId)->api.reindexer->Select(q, qres);
 				ASSERT_TRUE(err.ok()) << err.what();
 				ASSERT_EQ(qres.Count(), 1);
 				auto itsel = qres.begin().GetItem();
-				cluster.GetServerControl(nodeSlave)->api.reindexer->Delete(nsName, itsel);
-				sel0(nodeSlave);
+				cluster.GetServerControl(followerId)->api.reindexer->Delete(kNsName, itsel);
+				sel0(followerId);
 				sel0(leaderId);
 			}
 
 			{
 				for (int k = 0; k < 10; k++) {
-					auto item = cluster.GetServerControl(nodeSlave)->api.reindexer->NewItem(nsName);
+					auto item = cluster.GetServerControl(followerId)->api.reindexer->NewItem(kNsName);
 					ASSERT_TRUE(item.Status().ok()) << item.Status().what();
 					std::string itemJson =
 						"{"
@@ -245,21 +245,21 @@ TEST_F(ClusterizationApi, ApiTest) {
 						"}";
 					err = item.FromJSON(itemJson);
 					ASSERT_TRUE(err.ok()) << err.what();
-					err = cluster.GetServerControl(nodeSlave)->api.reindexer->Insert(nsName, item);
+					err = cluster.GetServerControl(followerId)->api.reindexer->Insert(kNsName, item);
 					ASSERT_TRUE(err.ok()) << err.what();
 				}
 				{
 					reindexer::Query qUpdate;
-					qUpdate.FromSQL("update " + nsName + " set name='up_name' where id>5");
+					qUpdate.FromSQL("update " + kNsName + " set name='up_name' where id>5");
 					reindexer::client::QueryResults qres;  //не заполняется
-					err = cluster.GetServerControl(nodeSlave)->api.reindexer->Update(qUpdate, qres);
+					err = cluster.GetServerControl(followerId)->api.reindexer->Update(qUpdate, qres);
 					ASSERT_TRUE(err.ok()) << err.what();
 
 					{
 						reindexer::Query q;
-						q.FromSQL("select name from " + nsName + " where id<=5");
+						q.FromSQL("select name from " + kNsName + " where id<=5");
 						reindexer::client::QueryResults qresSelect;
-						err = cluster.GetServerControl(nodeSlave)->api.reindexer->Select(q, qresSelect);
+						err = cluster.GetServerControl(followerId)->api.reindexer->Select(q, qresSelect);
 						ASSERT_TRUE(err.ok()) << err.what();
 						ASSERT_TRUE(qresSelect.Count() == 6);
 						int indx = 0;
@@ -277,9 +277,9 @@ TEST_F(ClusterizationApi, ApiTest) {
 					}
 					{
 						reindexer::Query q;
-						q.FromSQL("select name from " + nsName + " where id>5");
+						q.FromSQL("select name from " + kNsName + " where id>5");
 						reindexer::client::QueryResults qresSelect;
-						err = cluster.GetServerControl(nodeSlave)->api.reindexer->Select(q, qresSelect);
+						err = cluster.GetServerControl(followerId)->api.reindexer->Select(q, qresSelect);
 						ASSERT_TRUE(err.ok()) << err.what();
 						ASSERT_TRUE(qresSelect.Count() == 4);
 						int indx = 0;
@@ -296,9 +296,9 @@ TEST_F(ClusterizationApi, ApiTest) {
 				}
 				{
 					reindexer::Query qdel;
-					qdel.FromSQL("delete from " + nsName + " where id>0");
+					qdel.FromSQL("delete from " + kNsName + " where id>0");
 					reindexer::client::QueryResults qres;  //не заполняется
-					err = cluster.GetServerControl(nodeSlave)->api.reindexer->Delete(qdel, qres);
+					err = cluster.GetServerControl(followerId)->api.reindexer->Delete(qdel, qres);
 					ASSERT_TRUE(err.ok()) << err.what();
 					std::string itemJson =
 						"{"
@@ -309,16 +309,16 @@ TEST_F(ClusterizationApi, ApiTest) {
 						std::to_string(0) +
 						"\""
 						"}";
-					sel(nodeSlave, itemJson);
+					sel(followerId, itemJson);
 					sel(leaderId, itemJson);
 				}
 			}
 			{
-				err = cluster.GetServerControl(nodeSlave)->api.reindexer->TruncateNamespace(nsName);
+				err = cluster.GetServerControl(followerId)->api.reindexer->TruncateNamespace(kNsName);
 				ASSERT_TRUE(err.ok()) << err.what();
-				sel0(nodeSlave);
+				sel0(followerId);
 				sel0(leaderId);
-				auto item = cluster.GetServerControl(nodeSlave)->api.reindexer->NewItem(nsName);
+				auto item = cluster.GetServerControl(followerId)->api.reindexer->NewItem(kNsName);
 				ASSERT_TRUE(item.Status().ok()) << item.Status().what();
 				std::string itemJson =
 					"{"
@@ -332,38 +332,36 @@ TEST_F(ClusterizationApi, ApiTest) {
 
 				err = item.FromJSON(itemJson);
 				ASSERT_TRUE(err.ok()) << err.what();
-				err = cluster.GetServerControl(nodeSlave)->api.reindexer->Insert(nsName, item);
+				err = cluster.GetServerControl(followerId)->api.reindexer->Insert(kNsName, item);
 				ASSERT_TRUE(err.ok()) << err.what();
 				{
 					reindexer::client::QueryResults qresSelectTmp;
-					err = cluster.GetServerControl(nodeSlave)->api.reindexer->Select("select * from " + nsName, qresSelectTmp);
+					err = cluster.GetServerControl(followerId)->api.reindexer->Select("select * from " + kNsName, qresSelectTmp);
 					ASSERT_TRUE(err.ok()) << err.what();
 					ASSERT_TRUE(qresSelectTmp.Count() == 1) << "select count = " << qresSelectTmp.Count();
 				}
 				reindexer::client::QueryResults qr;
-				std::string q = "update " + nsName + " set name='up_name' where id=" + std::to_string(pk);
-				err = cluster.GetServerControl(nodeSlave)->api.reindexer->Select(q, qr);
+				std::string q = "update " + kNsName + " set name='up_name' where id=" + std::to_string(pk);
+				err = cluster.GetServerControl(followerId)->api.reindexer->Select(q, qr);
 				ASSERT_TRUE(err.ok()) << err.what();
 				{
 					reindexer::client::QueryResults qresSelect;
-					err = cluster.GetServerControl(nodeSlave)->api.reindexer->Select("select name from " + nsName, qresSelect);
+					err = cluster.GetServerControl(followerId)->api.reindexer->Select("select name from " + kNsName, qresSelect);
 					ASSERT_TRUE(err.ok()) << err.what();
 					ASSERT_TRUE(qresSelect.Count() == 1) << "select count = " << qresSelect.Count();
-					WrSerializer wrser;
-					err = qresSelect.begin().GetJSON(wrser, false);
-					ASSERT_TRUE(err.ok()) << err.what();
-					std::string json = wrser.c_str();
+
+					auto itm = qresSelect.begin().GetItem();
 					std::string itemJsonUp =
 						"{"
 						"\"name\":\"up_name\""
 						"}";
-					ASSERT_TRUE(json == itemJsonUp) << json;
+					ASSERT_TRUE(itm.GetJSON() == itemJsonUp) << itm.GetJSON();
 				}
 
 				reindexer::client::QueryResults qresDel;
-				err = cluster.GetServerControl(nodeSlave)->api.reindexer->Select("delete from " + nsName, qresDel);
+				err = cluster.GetServerControl(followerId)->api.reindexer->Select("delete from " + kNsName, qresDel);
 				ASSERT_TRUE(err.ok()) << err.what();
-				sel0(nodeSlave);
+				sel0(followerId);
 				sel0(leaderId);
 			}
 
@@ -381,62 +379,64 @@ TEST_F(ClusterizationApi, ApiTest) {
 }
 
 TEST_F(ClusterizationApi, DeleteSelect) {
-	const size_t kClusterSize = 4;
+	const size_t kClusterSize = 5;
 	net::ev::dynamic_loop loop;
-	loop.spawn([&loop] {
+	const std::string kNsName = "ns1";
+	loop.spawn([&loop, &kNsName] {
 		try {
 			Cluster cluster(loop, 0, kClusterSize);
-			auto leaderId = cluster.AwaitLeader(std::chrono::seconds(10));
-			int nodeSlave = (leaderId + 1) % kClusterSize;
-			cluster.InitNs(leaderId, "ns1");
-			cluster.WaitSync("ns1");
+			auto leaderId = cluster.AwaitLeader(kMaxElectionsTime);
+			int followerId = (leaderId + 1) % kClusterSize;
+			cluster.InitNs(leaderId, kNsName);
+			cluster.WaitSync(kNsName);
 			for (int i = 0; i < 10; i++) {
 				int nodeNum = rand() % kClusterSize;
-				cluster.AddRow(nodeNum, "ns1", i);
+				cluster.AddRow(nodeNum, kNsName, i);
 			}
 			{
 				client::QueryResults qr;
-				cluster.GetServerControl(leaderId)->api.reindexer->Select(Query("ns1"), qr);
+				cluster.GetServerControl(leaderId)->api.reindexer->Select(Query(kNsName), qr);
 				ASSERT_EQ(qr.Count(), 10) << "must 10 records current " << qr.Count();
 			}
-			cluster.WaitSync("ns1");
+			cluster.WaitSync(kNsName);
 
-			auto serverSlave = cluster.GetServerControl(nodeSlave);
+			auto followerNode = cluster.GetServerControl(followerId);
 			for (int k = 0; k < 10; k++) {
 				{
 					Query qDel;
-					qDel.FromSQL("select * from ns1 where id<5");
+					qDel.FromSQL("select * from " + kNsName + " where id<5");
 					client::QueryResults delResult;
-					Error err = serverSlave->api.reindexer->Select(qDel, delResult);
+					Error err = followerNode->api.reindexer->Select(qDel, delResult);
 					ASSERT_EQ(delResult.Count(), 5) << "-------------------------- incorect count for delete";
-					for (auto it = delResult.begin(); it != delResult.end(); ++it) {
+					for (auto& it : delResult) {
 						auto item = it.GetItem();
-						Error err = serverSlave->api.reindexer->Delete("ns1", item);
+						err = followerNode->api.reindexer->Delete(kNsName, item);
 						ASSERT_TRUE(err.ok()) << err.what();
 					}
 				}
 				{
 					Query qSel;
-					qSel.FromSQL("select * from ns1 where id<5");
+					qSel.FromSQL("select * from " + kNsName + " where id<5");
 					client::QueryResults selResult;
-					Error err = serverSlave->api.reindexer->Select(qSel, selResult);
+					Error err = followerNode->api.reindexer->Select(qSel, selResult);
 					ASSERT_TRUE(selResult.Count() == 0) << "------------------------- incorrect count =" << selResult.Count();
 				}
 				{
 					for (int i = 0; i < 5; i++) {
-						cluster.AddRow(nodeSlave, "ns1", i);
+						cluster.AddRow(followerId, kNsName, i);
 					}
 				}
 			}
 			Query qSel;
-			qSel.FromSQL("select * from ns1 order by id");
+			qSel.FromSQL("select * from " + kNsName + " order by id");
 			client::QueryResults selResult;
-			serverSlave->api.reindexer->Select(qSel, selResult);
+			followerNode->api.reindexer->Select(qSel, selResult);
 			std::cout << "selected items" << std::endl;
 			for (auto it = selResult.begin(); it != selResult.end(); ++it) {
 				std::cout << it.GetItem().GetJSON() << std::endl;
 			}
 
+			followerNode.reset();
 			cluster.StopClients();
 		} catch (Error& e) {
 			ASSERT_TRUE(false) << e.what();
@@ -450,66 +450,93 @@ TEST_F(ClusterizationApi, DeleteSelect) {
 	loop.run();
 }
 
-TEST_F(ClusterizationApi, DISABLED_SimpleRWTest) {
-	const size_t kClusterSize = 4;
+TEST_F(ClusterizationApi, SimpleRWTest) {
+	const size_t kClusterSize = 5;
 	net::ev::dynamic_loop loop;
-	loop.spawn([&loop] {
+	const std::string kNsName = "ns1";
+	loop.spawn([&loop, &kNsName] {
 		Cluster cluster(loop, 0, kClusterSize);
-		auto leaderId = cluster.AwaitLeader(std::chrono::seconds(5), true);
+		auto leaderId = cluster.AwaitLeader(kMaxElectionsTime);
 		int oldLeaderId = -1;
 		std::cout << "++++++++++++++leaderId = " << leaderId << std::endl;
-		int nodeSlave = (leaderId + 1) % kClusterSize;
-		cluster.InitNs(leaderId, "ns1");
+		cluster.InitNs(leaderId, kNsName);
+		cluster.WaitSync(kNsName);
 		for (int i = 0; i < 1000; i++) {
 			int nodeNum = rand() % kClusterSize;
-			cluster.AddRow(nodeNum, "ns1", i);
+			cluster.AddRow(nodeNum, kNsName, i);
 		}
-		cluster.WaitSync("ns1");
+		cluster.WaitSync(kNsName);
 
-		auto serverSlave = cluster.GetServerControl(nodeSlave);
+		auto followerNode = cluster.GetServerControl((leaderId + 1) % kClusterSize);
 		Query qDel;
-		qDel.FromSQL("delete from ns1 where id<500");
+		qDel.FromSQL("delete from " + kNsName + " where id<500");
 		client::QueryResults delResult;
-		//		serverSlave->api.reindexer->Delete(qDel, delResult);
+		//		followerNode->api.reindexer->Delete(qDel, delResult);
 		std::cout << "deleted items" << std::endl;
 		for (auto it = delResult.begin(); it != delResult.end(); ++it) {
 			auto item = it.GetItem();
-			string_view itemJson = item.GetJSON();
-			std::cout << itemJson << std::endl;
+			std::cout << item.GetJSON() << std::endl;
 		}
 
 		{
-			Query qSel;
-			qSel.FromSQL("select * from ns1 where id<500");
-			client::QueryResults selResult;
-			serverSlave->api.reindexer->Select(qSel, selResult);
+			std::vector<std::string> qrJsons;
 			int counter = 0;
+			{
+				Query qSel;
+				qSel.FromSQL("select * from " + kNsName + " where id<500");
+				client::QueryResults selResult;
+				followerNode->api.reindexer->Select(qSel, selResult);
 
-			for (auto it = selResult.begin(); it != selResult.end(); ++it, counter++) {
-				auto item = it.GetItem();
+				WrSerializer ser;
+				for (auto& it : selResult) {
+					ser.Reset();
+					it.GetJSON(ser, false);
+					qrJsons.emplace_back(ser.Slice());
+				}
+			}
+
+			int followerId = (leaderId + 1) % kClusterSize;
+			for (auto& json : qrJsons) {
 				if (counter % 50 == 0 && leaderId != -1) {
+					if (followerId == leaderId) {
+						followerId = (leaderId + 1) % kClusterSize;
+						std::cerr << "!!!@ GetServerControl for " << followerId << std::endl;
+						followerNode = cluster.GetServerControl(followerId);
+						std::cerr << "!!!# GetServerControl for " << followerId << std::endl;
+					}
+					std::cerr << "!!!@ StopServer for " << leaderId << std::endl;
 					cluster.StopServer(leaderId);
+					std::cerr << "!!!# StopServer for " << leaderId << std::endl;
 					oldLeaderId = leaderId;
 					leaderId = -1;
 				} else if (counter % 75 == 0 && oldLeaderId != -1) {
+					std::cerr << "!!!@ StartServer for " << oldLeaderId << std::endl;
 					cluster.StartServer(oldLeaderId);
-					leaderId = cluster.AwaitLeader(std::chrono::seconds(10));
+					std::cerr << "!!!# StartServer for " << oldLeaderId << std::endl;
+					leaderId = cluster.AwaitLeader(kMaxElectionsTime);
 				}
 
-				Error err = serverSlave->api.reindexer->Delete("ns1", item);
+				std::cerr << "!!!@ NewItem " << followerId << std::endl;
+				auto item = followerNode->api.reindexer->NewItem(kNsName);
+				Error err = item.FromJSON(json);
 				ASSERT_TRUE(err.ok()) << err.what();
+				std::cerr << "!!!@ Delete " << followerId << std::endl;
+				err = followerNode->api.reindexer->Delete(kNsName, item);
+				ASSERT_TRUE(err.ok()) << err.what();
+				std::cerr << "!!!# Delete " << followerId << std::endl;
+				++counter;
 			}
 		}
 
 		Query qSel;
-		qSel.FromSQL("select * from ns1");
+		qSel.FromSQL("select * from " + kNsName);
 		client::QueryResults selResult;
-		serverSlave->api.reindexer->Select(qSel, selResult);
+		followerNode->api.reindexer->Select(qSel, selResult);
 		std::cout << "selected items" << std::endl;
 		for (auto it = selResult.begin(); it != selResult.end(); ++it) {
-			string_view itemJson = it.GetItem().GetJSON();
-			std::cout << itemJson << std::endl;
+			std::cout << it.GetItem().GetJSON() << std::endl;
 		}
+		followerNode.reset();
 
 		//		std::this_thread::sleep_for(std::chrono::seconds(1000));
 		cluster.StopClients();
@@ -773,6 +800,8 @@ TEST_F(ClusterizationApi, InitialLeaderSync) {
 	loop.run();
 }
 
+#ifndef REINDEX_WITH_TSAN
+
 TEST_F(ClusterizationApi, MultithreadSyncTest) {
 	// Check full cluster synchronization via all the available mechanisms
 	constexpr size_t kClusterSize = 5;
@@ -874,6 +903,7 @@ TEST_F(ClusterizationApi, MultithreadSyncTest) {
 
 		// Make shure, that cluster is synchronized
 		for (auto& ns : kNsNames) {
+			std::cerr << "Wait sync for " << ns << std::endl;
 			cluster.WaitSync(ns);
 		}
 
@@ -882,3 +912,5 @@ TEST_F(ClusterizationApi, MultithreadSyncTest) {
 
 	loop.run();
 }
+
+#endif	// #ifndef REINDEX_WITH_TSAN
